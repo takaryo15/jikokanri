@@ -64,6 +64,15 @@ TEMPLATE_CONTENTS = {
 - 提案版は未承認状態
 - target_dateは振り返り日の翌日
 - 優先順位は院試、研究、筋トレ・健康、競馬AI、定期収入、松尾研、読書
+- 当日の確定版タスクIDが分かる場合だけrecord-results用JSONにtask_resultsを入れる
+- CLIのtoday --show-idsまたは確定版に表示されたタスクIDだけを使う
+- 存在しないIDを推測で作らない
+- タスクIDが不明な場合はtask_resultsを空配列にする
+- save-night用night.jsonではtask_resultsは空配列にし、結果はrecord-results用JSONとして別に出力する
+- task_resultsのstatusはcompleted、partial、minimum_only、not_started、skippedだけを使う
+- minimum_line_achievedはtrueまたはfalseにする
+
+save-night用night.json:
 
 ```json
 {
@@ -106,7 +115,23 @@ TEMPLATE_CONTENTS = {
       }
     ],
     "one_change_tomorrow": "朝イチで過去問を開く"
-  }
+  },
+  "task_results": []
+}
+```
+
+record-results用JSON:
+
+```json
+{
+  "task_results": [
+    {
+      "task_id": "task-1",
+      "status": "completed",
+      "note": "大問1を最後まで解いた",
+      "minimum_line_achieved": true
+    }
+  ]
 }
 ```
 """,

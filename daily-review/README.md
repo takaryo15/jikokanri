@@ -39,21 +39,48 @@ templates/
 
 保存先を変えたい場合は各コマンドで `--root /path/to/root` を指定できます。
 
-## 毎晩の使い方
+## 基本の流れ
 
-1. ChatGPTへ夜の振り返りを送る
-2. ChatGPTが `night.json` 形式で出力する
-3. `save-night` で一括保存する
-4. 提案版を確認する
-5. OKなら `approve-plan` で承認する
-6. 翌朝に `today` で確認する
+朝:
 
 ```bash
-daily-review save-night --file night.json
-daily-review show-proposal --date 2026-07-13
-daily-review approve-plan --date 2026-07-13
+daily-review today
+```
+
+今日の確定済みタスクを見ます。夜にChatGPTへタスク結果を渡す場合は、ID付きで表示します。
+
+```bash
+daily-review today --date 2026-07-14 --show-ids
+```
+
+夜:
+
+1. ChatGPTへ夜の振り返りを送る
+2. ChatGPTが `task_results.json` と `night.json` を出力する
+3. 当日のタスク結果を保存する
+4. 夜の振り返りと明日の提案版を保存する
+5. 提案版を確認する
+6. OKなら `approve-plan` で承認する
+7. 翌朝に `today` で確認する
+
+```bash
+daily-review today --date 2026-07-14 --show-ids
+daily-review record-results --date 2026-07-14 --file task_results.json
+daily-review save-night --date 2026-07-14 --file night.json
+daily-review show-proposal --date 2026-07-14
+daily-review approve-plan --date 2026-07-14
 daily-review today --date 2026-07-14
 ```
+
+未完了確認:
+
+```bash
+daily-review carryover --date 2026-07-14
+```
+
+`carryover` は引き継ぎ候補を表示するだけです。翌日の提案版や確定版へは自動追加しません。
+
+## 毎晩の保存
 
 日付を明示したい場合:
 
@@ -75,6 +102,8 @@ daily-review list --limit 7
 ```
 
 日次Markdownは `logs/YYYY-MM-DD.md` に作成されます。生ログ、日記、今日のMain、最低ライン、崩れた原因、提案版、確定版を1ファイルで見返せます。
+
+`save-night` は安全性のため、`task_results` の同時保存はしません。タスク結果は `record-results` で先に保存してください。
 
 ## 個別に保存する場合
 
@@ -157,7 +186,29 @@ daily-review weekly --date 2026-07-13
       }
     ],
     "one_change_tomorrow": "朝イチで過去問を開く"
-  }
+  },
+  "task_results": []
+}
+```
+
+`task_results.json`:
+
+```json
+{
+  "task_results": [
+    {
+      "task_id": "task-1",
+      "status": "completed",
+      "note": "大問1を最後まで解いた",
+      "minimum_line_achieved": true
+    },
+    {
+      "task_id": "task-2",
+      "status": "partial",
+      "note": "RGS1だけ確認した",
+      "minimum_line_achieved": true
+    }
+  ]
 }
 ```
 
@@ -214,8 +265,11 @@ daily-review save-raw --date YYYY-MM-DD [--file raw.txt]
 daily-review save-review --date YYYY-MM-DD [--file review.json]
 daily-review save-proposal --date YYYY-MM-DD [--file proposal.json]
 daily-review approve-plan --date YYYY-MM-DD [--force]
-daily-review today [--date YYYY-MM-DD]
+daily-review today [--date YYYY-MM-DD] [--show-ids]
 daily-review show-proposal --date YYYY-MM-DD
+daily-review record-results --date YYYY-MM-DD [--file task_results.json]
+daily-review results --date YYYY-MM-DD
+daily-review carryover --date YYYY-MM-DD [--include-skipped]
 daily-review status --date YYYY-MM-DD
 daily-review list [--limit 7]
 daily-review validate --date YYYY-MM-DD

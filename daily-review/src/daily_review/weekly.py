@@ -4,7 +4,17 @@ from collections import Counter, defaultdict
 from typing import Any
 
 from .date_utils import date_range, week_range_for
-from .storage import load_daily
+from .storage import load_daily, read_json_file
+
+
+CARRYOVER_STATUSES = {"partial", "minimum_only", "not_started"}
+
+
+def _all_daily_entries(root) -> list[dict[str, Any]]:
+    daily_dir = root / "data" / "daily"
+    if not daily_dir.exists():
+        return []
+    return [read_json_file(path) for path in sorted(daily_dir.glob("*.json"))]
 
 
 def build_weekly_summary(root, day: str) -> dict[str, Any]:
@@ -24,6 +34,15 @@ def build_weekly_summary(root, day: str) -> dict[str, Any]:
     daily_changes: list[dict[str, str]] = []
     pending_proposal_days: list[str] = []
     approved_plan_days = 0
+    task_total = 0
+    task_completed = 0
+    task_minimum_total = 0
+    task_minimum_achieved = 0
+    task_status_counts: Counter[str] = Counter()
+    task_area_status_counts: dict[str, Counter[str]] = defaultdict(Counter)
+    unrecorded_count = 0
+    carryover_count = 0
+    incomplete_by_task: Counter[str] = Counter()
 
     for entry in entries:
         review = entry.get("structured_review") or {}
@@ -49,6 +68,34 @@ def build_weekly_summary(root, day: str) -> dict[str, Any]:
         if entry.get("tomorrow_plan_proposal") and not entry.get("tomorrow_plan_final"):
             pending_proposal_days.append(entry["date"])
 
+    for entry in _all_daily_entries(root):
+        final = entry.get("tomorrow_plan_final") or {}
+        target_date = final.get("target_date")
+        if not target_date or not (start <= target_date <= end):
+            continue
+        results = {result.get("task_id"): result for result in entry.get("task_results") or []}
+        for task in final.get("tasks") or []:
+            task_total += 1
+            task_minimum_total += 1
+            result = results.get(task.get("id"))
+            task_key = f"{task.get('area', '未設定')}：{task.get('task', '未設定')}"
+            if not result:
+                unrecorded_count += 1
+                carryover_count += 1
+                incomplete_by_task[task_key] += 1
+                task_area_status_counts[task.get("area", "未設定")]["unrecorded"] += 1
+                continue
+            status = result.get("status", "unrecorded")
+            task_status_counts[status] += 1
+            task_area_status_counts[task.get("area", "未設定")][status] += 1
+            if status == "completed":
+                task_completed += 1
+            if result.get("minimum_line_achieved"):
+                task_minimum_achieved += 1
+            if status in CARRYOVER_STATUSES:
+                carryover_count += 1
+                incomplete_by_task[task_key] += 1
+
     ranking = [{"cause": cause, "count": count} for cause, count in breakdown_counter.most_common()]
     if ranking:
         next_week_candidate = f"{ranking[0]['cause']}を減らすため、最初の一手を1つだけ決める"
@@ -58,6 +105,8 @@ def build_weekly_summary(root, day: str) -> dict[str, Any]:
         warnings.append("記録日数が少ないため、週次傾向は参考値です")
 
     percent = round((minimum_achieved / minimum_total) * 100, 1) if minimum_total else 0
+    task_completion_percent = round((task_completed / task_total) * 100, 1) if task_total else None
+    task_minimum_percent = round((task_minimum_achieved / task_minimum_total) * 100, 1) if task_minimum_total else None
     return {
         "start_date": start,
         "end_date": end,
@@ -75,4 +124,24 @@ def build_weekly_summary(root, day: str) -> dict[str, Any]:
         "pending_proposal_days": pending_proposal_days,
         "next_week_change_candidate": next_week_candidate,
         "warnings": warnings,
+        "task_execution": {
+            "total": task_total,
+            "completion_rate": {
+                "completed": task_completed,
+                "total": task_total,
+                "percent": task_completion_percent,
+            },
+            "task_minimum_line_rate": {
+                "achieved": task_minimum_achieved,
+                "total": task_minimum_total,
+                "percent": task_minimum_percent,
+            },
+            "status_counts": dict(task_status_counts),
+            "area_status_counts": {area: dict(counter) for area, counter in task_area_status_counts.items()},
+            "unrecorded_count": unrecorded_count,
+            "carryover_count": carryover_count,
+            "repeated_incomplete_candidates": [
+                task for task, count in incomplete_by_task.items() if count >= 2
+            ],
+        },
     }

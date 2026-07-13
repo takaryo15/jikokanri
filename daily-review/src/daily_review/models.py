@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 
 class FlexibleModel(BaseModel):
@@ -36,6 +37,7 @@ class ReviewInput(FlexibleModel):
 
 
 class PlanTask(FlexibleModel):
+    id: str | None = None
     area: str
     task: str
     priority: int = Field(ge=1)
@@ -65,6 +67,18 @@ class ProposalInput(FlexibleModel):
     one_change_tomorrow: str
 
 
+class TaskResult(FlexibleModel):
+    task_id: str
+    status: Literal["completed", "partial", "minimum_only", "not_started", "skipped"]
+    note: str | None = None
+    minimum_line_achieved: StrictBool
+    recorded_at: str | None = None
+
+
+class TaskResultsInput(FlexibleModel):
+    task_results: list[TaskResult] = Field(default_factory=list)
+
+
 class DailyEntry(FlexibleModel):
     date: str
     raw_log: str | None = None
@@ -72,6 +86,7 @@ class DailyEntry(FlexibleModel):
     structured_review: StructuredReview | None = None
     tomorrow_plan_proposal: Plan | None = None
     tomorrow_plan_final: Plan | None = None
+    task_results: list[TaskResult] = Field(default_factory=list)
     created_at: str
     updated_at: str
 
@@ -81,4 +96,4 @@ def dump_model(model: BaseModel) -> dict[str, Any]:
 
 
 def now_iso() -> str:
-    return datetime.now().astimezone().isoformat(timespec="seconds")
+    return datetime.now(ZoneInfo("Asia/Tokyo")).isoformat(timespec="seconds")

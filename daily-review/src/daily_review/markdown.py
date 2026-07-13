@@ -3,6 +3,15 @@ from __future__ import annotations
 from typing import Any
 
 
+TASK_STATUS_LABELS = {
+    "completed": "完了",
+    "partial": "一部進んだ",
+    "minimum_only": "最低ラインのみ",
+    "not_started": "未着手",
+    "skipped": "意図的に見送り",
+}
+
+
 def _lines_for_plan(title: str, plan: dict[str, Any] | None) -> list[str]:
     lines = [f"## {title}"]
     if not plan:
@@ -25,6 +34,28 @@ def _lines_for_plan(title: str, plan: dict[str, Any] | None) -> list[str]:
     if plan.get("one_change_tomorrow"):
         lines.append("### 変えること")
         lines.append(plan["one_change_tomorrow"])
+    return lines
+
+
+def _lines_for_task_results(entry: dict[str, Any]) -> list[str]:
+    plan = entry.get("tomorrow_plan_final") or {}
+    results = {result.get("task_id"): result for result in entry.get("task_results") or []}
+    tasks = plan.get("tasks") or []
+    target = plan.get("target_date", "対象日未設定")
+    lines = [f"## タスク実行結果｜{target}"]
+    if not tasks:
+        return lines + ["確定版タスクがありません"]
+    for task in tasks:
+        result = results.get(task.get("id"))
+        lines.append(f"- {task.get('area', '未設定')}：{task.get('task', '未設定')}")
+        if result:
+            lines.append(f"  - 結果：{TASK_STATUS_LABELS.get(result.get('status'), result.get('status', '未記録'))}")
+            lines.append(f"  - 最低ライン：{'達成' if result.get('minimum_line_achieved') else '未達'}")
+            if result.get("note"):
+                lines.append(f"  - メモ：{result['note']}")
+        else:
+            lines.append("  - 結果：未記録")
+            lines.append("  - 最低ライン：未記録")
     return lines
 
 
@@ -69,6 +100,8 @@ def render_daily(entry: dict[str, Any]) -> str:
 
     lines.extend(_lines_for_plan("明日の指示書・提案版", entry.get("tomorrow_plan_proposal")))
     lines.extend(_lines_for_plan("明日の指示書・確定版", entry.get("tomorrow_plan_final")))
+    if entry.get("tomorrow_plan_final"):
+        lines.extend(_lines_for_task_results(entry))
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -115,4 +148,20 @@ def render_weekly(summary: dict[str, Any]) -> str:
     if summary["warnings"]:
         lines.append("## 警告")
         lines.extend(f"- {warning}" for warning in summary["warnings"])
+    task_summary = summary.get("task_execution")
+    if task_summary:
+        lines.append("## タスク実行状況")
+        if task_summary.get("total"):
+            completion = task_summary["completion_rate"]
+            minimum = task_summary["task_minimum_line_rate"]
+            lines.append(f"通常タスク完了率: {completion['percent']}%（{completion['completed']}/{completion['total']}）")
+            lines.append(f"最低ライン達成率: {minimum['percent']}%（{minimum['achieved']}/{minimum['total']}）")
+            for status, label in TASK_STATUS_LABELS.items():
+                lines.append(f"{label}: {task_summary['status_counts'].get(status, 0)}件")
+            lines.append(f"未記録: {task_summary['unrecorded_count']}件")
+            lines.append(f"引き継ぎ候補数: {task_summary['carryover_count']}件")
+            lines.append("### 連続して未完了の候補")
+            lines.extend([f"- {item}" for item in task_summary["repeated_incomplete_candidates"]] or ["なし"])
+        else:
+            lines.append("集計対象なし")
     return "\n".join(lines).rstrip() + "\n"
