@@ -1,0 +1,162 @@
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from .models import DailyEntry, now_iso
+
+
+DATA_DIRS = [
+    Path("data/daily"),
+    Path("data/weekly"),
+    Path("logs"),
+    Path("templates"),
+]
+
+
+TEMPLATE_CONTENTS = {
+    "night_review_prompt.md": """# 夜の振り返り
+## 今日のMain
+- 完了
+- 一部進んだ
+- 未着手
+## 最低ライン
+- 達成
+- 未達
+## 今日できたこと
+## 崩れた原因
+## 明日変えることを1つだけ
+## 日記（任意）
+""",
+    "tomorrow_plan_prompt.md": """# 明日の指示書
+
+* Mainは最大3つ
+* 優先順位は院試、研究、筋トレ・健康、競馬AI、定期収入、松尾研、読書
+* 予定を詰め込みすぎない
+* 通常タスクは目安6件以内
+* 各タスクに最低ラインを付ける
+* 明日変えることは1つだけ
+* ユーザー承認前は提案版として扱う
+""",
+    "weekly_review_prompt.md": """# 週次振り返り
+
+* 今週の勝ち
+* Mainの成績
+* 最低ライン達成率
+* 崩れた原因ランキング
+* 未承認の提案版
+* 来週変えること1つ
+""",
+}
+
+
+def resolve_root(root: Path | None = None) -> Path:
+    return (root or Path.cwd()).resolve()
+
+
+def init_workspace(root: Path) -> tuple[list[Path], list[Path]]:
+    created: list[Path] = []
+    existing: list[Path] = []
+    for relative in DATA_DIRS:
+        path = root / relative
+        if path.exists():
+            existing.append(path)
+        else:
+            path.mkdir(parents=True, exist_ok=True)
+            created.append(path)
+
+    templates_dir = root / "templates"
+    for name, content in TEMPLATE_CONTENTS.items():
+        path = templates_dir / name
+        if path.exists():
+            existing.append(path)
+        else:
+            path.write_text(content, encoding="utf-8")
+            created.append(path)
+    return created, existing
+
+
+def daily_path(root: Path, day: str) -> Path:
+    return root / "data" / "daily" / f"{day}.json"
+
+
+def daily_log_path(root: Path, day: str) -> Path:
+    return root / "logs" / f"{day}.md"
+
+
+def weekly_path(root: Path, start: str, end: str) -> Path:
+    return root / "data" / "weekly" / f"{start}_{end}.json"
+
+
+def weekly_log_path(root: Path, start: str, end: str) -> Path:
+    return root / "logs" / f"weekly_{start}_{end}.md"
+
+
+def read_json_file(path: Path) -> dict[str, Any]:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"JSONの読み込みに失敗しました: {path} の {exc.lineno}行{exc.colno}列付近（{exc.msg}）"
+        ) from exc
+
+
+def load_daily(root: Path, day: str) -> dict[str, Any] | None:
+    path = daily_path(root, day)
+    if not path.exists():
+        return None
+    return read_json_file(path)
+
+
+def new_daily(day: str) -> dict[str, Any]:
+    timestamp = now_iso()
+    return {
+        "date": day,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+    }
+
+
+def load_or_create_daily(root: Path, day: str) -> dict[str, Any]:
+    return load_daily(root, day) or new_daily(day)
+
+
+def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    DailyEntry.model_validate(payload)
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+        text=True,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def save_daily(root: Path, day: str, payload: dict[str, Any]) -> Path:
+    payload["date"] = day
+    payload["updated_at"] = now_iso()
+    payload.setdefault("created_at", payload["updated_at"])
+    path = daily_path(root, day)
+    atomic_write_json(path, payload)
+    return path
+
+
+def write_text(path: Path, content: str) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    return path
