@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 
 DATE_FORMAT = "%Y-%m-%d"
@@ -15,7 +16,7 @@ def format_date(value: date) -> str:
 
 
 def today_string() -> str:
-    return date.today().isoformat()
+    return datetime.now(ZoneInfo("Asia/Tokyo")).date().isoformat()
 
 
 def tomorrow_of(day: str) -> str:

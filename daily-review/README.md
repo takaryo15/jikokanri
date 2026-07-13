@@ -41,23 +41,31 @@ templates/
 
 ## 毎晩の使い方
 
-1. ChatGPTへ振り返りを送る
-2. 生ログを `save-raw` で保存する
-3. 整形結果を `save-review` で保存する
-4. 明日の指示書を `save-proposal` で保存する
-5. `status` と `validate` で保存状況と検証結果を確認する
-6. OKなら `approve-plan` する
+1. ChatGPTへ夜の振り返りを送る
+2. ChatGPTが `night.json` 形式で出力する
+3. `save-night` で一括保存する
+4. 提案版を確認する
+5. OKなら `approve-plan` で承認する
+6. 翌朝に `today` で確認する
 
 ```bash
-daily-review save-raw --date 2026-07-13 --file raw.txt
-daily-review save-review --date 2026-07-13 --file review.json
-daily-review save-proposal --date 2026-07-13 --file proposal.json
-daily-review status --date 2026-07-13
-daily-review validate --date 2026-07-13
+daily-review save-night --file night.json
+daily-review show-proposal --date 2026-07-13
 daily-review approve-plan --date 2026-07-13
+daily-review today --date 2026-07-14
 ```
 
-`save-raw` は `--file` を省略すると標準入力から貼り付けできます。入力後は `Ctrl-D` で保存します。
+日付を明示したい場合:
+
+```bash
+daily-review save-night --date 2026-07-13 --file night.json
+```
+
+`save-night` は `--file` を省略すると標準入力から貼り付けできます。入力後は `Ctrl-D` で保存します。
+
+```bash
+cat night.json | daily-review save-night --date 2026-07-13
+```
 
 保存後は、日次JSONとMarkdownの保存先、次に実行するコマンドが表示されます。保存内容をざっと確認したいときは次を使います。
 
@@ -67,6 +75,19 @@ daily-review list --limit 7
 ```
 
 日次Markdownは `logs/YYYY-MM-DD.md` に作成されます。生ログ、日記、今日のMain、最低ライン、崩れた原因、提案版、確定版を1ファイルで見返せます。
+
+## 個別に保存する場合
+
+`save-night` を使わず、各ファイルを分けて保存することもできます。
+
+```bash
+daily-review save-raw --date 2026-07-13 --file raw.txt
+daily-review save-review --date 2026-07-13 --file review.json
+daily-review save-proposal --date 2026-07-13 --file proposal.json
+daily-review status --date 2026-07-13
+daily-review validate --date 2026-07-13
+daily-review approve-plan --date 2026-07-13
+```
 
 ## 朝の使い方
 
@@ -101,6 +122,44 @@ daily-review weekly --date 2026-07-13
 対象期間は `2026-07-07` から `2026-07-13` です。
 
 ## JSON入力例
+
+`night.json`:
+
+```json
+{
+  "date": "2026-07-13",
+  "raw_log": "今日は研究室に行った。院試は少しだけ進めた。",
+  "diary": "少し疲れていたが、完全に何もしない日にはならなかった。",
+  "structured_review": {
+    "today_main": [
+      {
+        "area": "院試",
+        "status": "一部進んだ",
+        "note": "過去問の問題文を確認した"
+      }
+    ],
+    "minimum_line": {
+      "院試": "達成"
+    },
+    "what_went_well": ["学校に行けた"],
+    "breakdown_causes": ["スマホ"],
+    "one_change_tomorrow": "朝イチで過去問を開く"
+  },
+  "tomorrow_plan_proposal": {
+    "target_date": "2026-07-14",
+    "main": ["院試", "研究", "筋トレ・健康"],
+    "tasks": [
+      {
+        "area": "院試",
+        "task": "過去問を大問1つ解く",
+        "priority": 1,
+        "minimum_line": "問題文を開く"
+      }
+    ],
+    "one_change_tomorrow": "朝イチで過去問を開く"
+  }
+}
+```
 
 `review.json`:
 
@@ -150,11 +209,13 @@ daily-review weekly --date 2026-07-13
 
 ```text
 daily-review init
+daily-review save-night --date YYYY-MM-DD [--file night.json]
 daily-review save-raw --date YYYY-MM-DD [--file raw.txt]
 daily-review save-review --date YYYY-MM-DD [--file review.json]
 daily-review save-proposal --date YYYY-MM-DD [--file proposal.json]
 daily-review approve-plan --date YYYY-MM-DD [--force]
 daily-review today [--date YYYY-MM-DD]
+daily-review show-proposal --date YYYY-MM-DD
 daily-review status --date YYYY-MM-DD
 daily-review list [--limit 7]
 daily-review validate --date YYYY-MM-DD

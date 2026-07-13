@@ -50,6 +50,66 @@ TEMPLATE_CONTENTS = {
 * 未承認の提案版
 * 来週変えること1つ
 """,
+    "chatgpt_night_output_prompt.md": """# ChatGPT夜入力用プロンプト
+
+ユーザーの夜の振り返りを、以下のJSON形式だけで出力してください。
+
+- Markdownコードブロックは使わない
+- JSON以外の説明文は付けない
+- raw_logはユーザーの元文章を改変せず保存する
+- Mainは最大3つ
+- 各タスクに最低ラインを付ける
+- 通常タスクは原則6件以内
+- 明日変えることは1つだけ
+- 提案版は未承認状態
+- target_dateは振り返り日の翌日
+- 優先順位は院試、研究、筋トレ・健康、競馬AI、定期収入、松尾研、読書
+
+```json
+{
+  "date": "YYYY-MM-DD",
+  "raw_log": "ユーザーの元文章を改変せずに入れる",
+  "diary": "日記として残す短い文章",
+  "structured_review": {
+    "today_main": [
+      {
+        "area": "院試",
+        "status": "一部進んだ",
+        "note": "過去問の問題文を確認した"
+      }
+    ],
+    "minimum_line": {
+      "院試": "達成",
+      "研究": "未達"
+    },
+    "what_went_well": [
+      "学校に行けた"
+    ],
+    "breakdown_causes": [
+      "スマホ"
+    ],
+    "one_change_tomorrow": "朝イチで過去問を開く"
+  },
+  "tomorrow_plan_proposal": {
+    "target_date": "YYYY-MM-DD",
+    "main": [
+      "院試",
+      "研究",
+      "筋トレ・健康"
+    ],
+    "tasks": [
+      {
+        "area": "院試",
+        "task": "過去問を大問1つ解く",
+        "priority": 1,
+        "minimum_line": "問題文を開く"
+      }
+    ],
+    "one_change_tomorrow": "朝イチで過去問を開く"
+  }
+}
+```
+""",
 }
 
 

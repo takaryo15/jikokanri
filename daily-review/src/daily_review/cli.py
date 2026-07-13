@@ -8,7 +8,7 @@ from typing import Any
 import typer
 from pydantic import ValidationError
 
-from .date_utils import today_string, tomorrow_of, week_range_for
+from .date_utils import parse_date, today_string, tomorrow_of, week_range_for
 from .markdown import render_daily, render_weekly
 from .models import Plan, ProposalInput, ReviewInput, dump_model, now_iso
 from .storage import (
@@ -90,6 +90,75 @@ def _print_validation(result: ValidationResult) -> None:
         typer.echo(f"- {item}")
 
 
+def _clean_proposal_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    proposal = dict(payload)
+    proposal.pop("status", None)
+    proposal.pop("approved_at", None)
+    return proposal
+
+
+def _resolve_night_date(cli_date: str | None, payload: dict[str, Any]) -> str:
+    json_date = payload.get("date")
+    if cli_date and json_date and cli_date != json_date:
+        raise typer.BadParameter(f"--date とJSON内のdateが一致しません（--date: {cli_date}, JSON: {json_date}）")
+    day = cli_date or json_date or today_string()
+    try:
+        parse_date(day)
+    except ValueError as exc:
+        raise typer.BadParameter(f"dateはYYYY-MM-DD形式にしてください（現在: {day}）") from exc
+    return day
+
+
+def _build_pending_plan(payload: dict[str, Any], day: str) -> tuple[dict[str, Any], ValidationResult]:
+    try:
+        proposal_input = ProposalInput.model_validate(_clean_proposal_payload(payload))
+    except ValidationError as exc:
+        raise typer.BadParameter(_format_validation_error(exc)) from exc
+
+    plan = Plan(
+        **dump_model(proposal_input),
+        status="pending_review",
+    )
+    plan_payload = dump_model(plan)
+    result = validate_plan(plan_payload, day, final=False)
+    if plan_payload.get("status") == "pending_review":
+        result.ok.append("提案版: statusはpending_reviewです")
+    else:
+        result.errors.append("提案版: statusはpending_reviewにしてください")
+    return plan_payload, result
+
+
+def _print_plan_summary(title: str, plan: dict[str, Any], status_label: str) -> None:
+    typer.echo(f"{title}｜{plan.get('target_date', '未保存')}")
+    typer.echo(f"状態: {status_label}")
+    typer.echo("Main")
+    for index, item in enumerate(plan.get("main") or [], start=1):
+        typer.echo(f"{index}. {item}")
+    typer.echo("優先タスク")
+    for index, task in enumerate(plan.get("tasks") or [], start=1):
+        typer.echo(f"{index}. [{task.get('area')}] {task.get('task')}")
+        typer.echo(f"   最低ライン: {task.get('minimum_line')}")
+    typer.echo("明日変えること")
+    typer.echo(plan.get("one_change_tomorrow", "未保存"))
+
+
+def _print_night_summary(day: str, entry: dict[str, Any], warnings: list[str]) -> None:
+    final = entry.get("tomorrow_plan_final")
+    typer.echo(f"夜の振り返りを保存しました｜{day}")
+    typer.echo(f"生ログ       {_saved_label(entry.get('raw_log'))}")
+    typer.echo(f"日記         {_saved_label(entry.get('diary'))}")
+    typer.echo(f"整形ログ     {_saved_label(entry.get('structured_review'))}")
+    typer.echo(f"提案版       {_saved_label(entry.get('tomorrow_plan_proposal'))}")
+    typer.echo(f"確定版       {'承認済み' if final and final.get('status') == 'approved' else '未承認'}")
+    typer.echo(f"対象日       {_target_date_for_entry(entry)}")
+    typer.echo("次:")
+    typer.echo(f"daily-review approve-plan --date {day}")
+    if warnings:
+        typer.echo("警告")
+        for warning in warnings:
+            typer.echo(f"- {warning}")
+
+
 @app.command()
 def init(root: Path | None = RootOption) -> None:
     """必要なディレクトリとテンプレートを作成します。"""
@@ -161,8 +230,7 @@ def save_proposal(
     """明日の指示書の提案版を保存します。"""
     base = _root(root)
     day = _day(date)
-    payload = _read_json_from_file_or_stdin(file)
-    payload.pop("status", None)
+    payload = _clean_proposal_payload(_read_json_from_file_or_stdin(file))
     try:
         proposal_input = ProposalInput.model_validate(payload)
     except ValidationError as exc:
@@ -186,6 +254,56 @@ def save_proposal(
     typer.echo(f"Markdownを更新しました: {markdown_path}")
     _print_validation(result)
     typer.echo("次: 内容がよければ approve-plan で確定版にします。")
+
+
+@app.command("save-night")
+def save_night(
+    date: str | None = DateOption,
+    file: Path | None = typer.Option(None, "--file", help="夜の振り返り一括JSON"),
+    root: Path | None = RootOption,
+) -> None:
+    """生ログ、整形済み振り返り、明日の指示書・提案版を一括保存します。"""
+    base = _root(root)
+    payload = _read_json_from_file_or_stdin(file)
+    day = _resolve_night_date(date, payload)
+
+    raw_log = payload.get("raw_log")
+    if not isinstance(raw_log, str) or not raw_log.strip():
+        raise typer.BadParameter("raw_logは空でない文字列にしてください。")
+    if payload.get("structured_review") is None:
+        raise typer.BadParameter("structured_reviewがありません。")
+    if payload.get("tomorrow_plan_proposal") is None:
+        raise typer.BadParameter("tomorrow_plan_proposalがありません。")
+
+    try:
+        review_input = ReviewInput.normalize_payload(
+            {
+                "diary": payload.get("diary"),
+                "structured_review": payload.get("structured_review"),
+            }
+        )
+    except ValidationError as exc:
+        raise typer.BadParameter(_format_validation_error(exc)) from exc
+    if review_input.structured_review is None:
+        raise typer.BadParameter("structured_reviewがありません。")
+
+    proposal_payload = payload.get("tomorrow_plan_proposal")
+    if not isinstance(proposal_payload, dict):
+        raise typer.BadParameter("tomorrow_plan_proposalはJSONオブジェクトにしてください。")
+    plan_payload, result = _build_pending_plan(proposal_payload, day)
+    if result.has_errors:
+        _print_validation(result)
+        raise typer.Exit(code=1)
+
+    entry = load_or_create_daily(base, day)
+    entry["raw_log"] = raw_log
+    if review_input.diary is not None:
+        entry["diary"] = review_input.diary
+    entry["structured_review"] = dump_model(review_input.structured_review)
+    entry["tomorrow_plan_proposal"] = plan_payload
+    save_daily(base, day, entry)
+    _regenerate_daily_markdown(base, day, entry)
+    _print_night_summary(day, entry, result.warnings)
 
 
 @app.command("approve-plan")
@@ -285,6 +403,21 @@ def today(
         typer.echo(f"   最低ライン: {task.get('minimum_line')}")
     typer.echo("今日変えること")
     typer.echo(plan.get("one_change_tomorrow", "未保存"))
+
+
+@app.command("show-proposal")
+def show_proposal(
+    date: str | None = DateOption,
+    root: Path | None = RootOption,
+) -> None:
+    """指定日の明日の指示書・提案版を短く表示します。"""
+    base = _root(root)
+    day = _day(date)
+    entry = load_daily(base, day)
+    if not entry or not entry.get("tomorrow_plan_proposal"):
+        typer.echo(f"{day} の提案版はまだありません。", err=True)
+        raise typer.Exit(code=1)
+    _print_plan_summary("明日の指示書・提案版", entry["tomorrow_plan_proposal"], "未承認")
 
 
 @app.command()
