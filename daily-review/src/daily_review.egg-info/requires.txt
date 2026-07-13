@@ -1,5 +1,0 @@
-typer>=0.9
-pydantic>=2
-
-[test]
-pytest>=8

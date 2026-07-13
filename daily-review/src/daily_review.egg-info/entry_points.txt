@@ -1,2 +1,0 @@
-[console_scripts]
-daily-review = daily_review.cli:app
