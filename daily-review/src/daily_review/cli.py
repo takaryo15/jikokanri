@@ -10,6 +10,8 @@ from typing import Any
 import typer
 from pydantic import ValidationError
 
+from . import __version__
+from .archive import create_backup, restore_backup
 from .date_utils import month_range_for, parse_date, today_string, tomorrow_of, week_range_for
 from .markdown import render_daily, render_monthly, render_weekly
 from .models import Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
@@ -32,9 +34,23 @@ from .storage import (
 from .validation import ValidationResult, validate_daily, validate_plan
 from .weekly import build_weekly_summary
 from .reporting import build_report, weekly_trends
+from .doctor import run_doctor
 
 
-app = typer.Typer(help="毎日の振り返りと明日の指示書をローカル保存するCLIです。", no_args_is_help=True)
+app = typer.Typer(
+    help="毎日の振り返りと明日の指示書をローカル保存するCLIです。",
+    no_args_is_help=True,
+    invoke_without_command=True,
+)
+
+
+@app.callback()
+def main(
+    version: bool = typer.Option(False, "--version", help="バージョンを表示して終了します。", is_eager=True),
+) -> None:
+    if version:
+        typer.echo(f"daily-review {__version__}")
+        raise typer.Exit()
 
 
 RootOption = typer.Option(None, "--root", help="保存先ルート。未指定ならカレントディレクトリです。")
@@ -922,14 +938,7 @@ def show_proposal(
     typer.echo(f"daily-review approve-plan --date {day}")
 
 
-@app.command("next")
-def next_action(
-    date: str | None = DateOption,
-    root: Path | None = RootOption,
-) -> None:
-    """保存状態から次に実行するコマンドをルールベースで表示します。"""
-    base = _root(root)
-    day = _day(date)
+def _print_next_action(base: Path, day: str, *, include_date: bool = False) -> None:
     entry = load_daily(base, day)
 
     if entry and entry.get("tomorrow_plan_proposal") and not entry.get("tomorrow_plan_final"):
@@ -955,7 +964,29 @@ def next_action(
     typer.echo("1. ChatGPTへ今日の結果を送る")
     typer.echo("2. JSONをコピーする")
     typer.echo("3. 以下を実行する")
-    typer.echo("daily-review close-day --clipboard --dry-run")
+    date_option = f" --date {day}" if include_date else ""
+    typer.echo(f"daily-review close-day{date_option} --clipboard --dry-run")
+
+
+@app.command("start")
+def start(
+    date: str | None = DateOption,
+    root: Path | None = RootOption,
+) -> None:
+    """指定日の状態から、今行うべき次の操作を案内します。"""
+    base = _root(root)
+    day = _day(date)
+    typer.echo(f"開始案内｜{day}")
+    _print_next_action(base, day, include_date=True)
+
+
+@app.command("next")
+def next_action(
+    date: str | None = DateOption,
+    root: Path | None = RootOption,
+) -> None:
+    """保存状態から次に実行するコマンドをルールベースで表示します。"""
+    _print_next_action(_root(root), _day(date))
 
 
 @app.command()
@@ -1066,6 +1097,65 @@ def weekly(
         typer.echo(f"最低ライン達成率: {task_minimum['percent']}%（{task_minimum['achieved']}/{task_minimum['total']}）")
     else:
         typer.echo("集計対象なし")
+
+
+@app.command()
+def backup(
+    root: Path | None = RootOption,
+    output: Path | None = typer.Option(None, "--output", help="出力ZIP、または出力先ディレクトリ"),
+) -> None:
+    """data、logs、templates をZIPバックアップします。"""
+    base = _root(root)
+    try:
+        path, manifest = create_backup(base, output)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"バックアップできませんでした: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"バックアップを作成しました: {path}")
+    typer.echo(f"ファイル数: {manifest['file_count']}")
+
+
+@app.command()
+def restore(
+    backup_file: Path = typer.Argument(..., help="backup コマンドで作成したZIPファイル"),
+    root: Path | None = RootOption,
+    dry_run: bool = typer.Option(False, "--dry-run", help="復元内容だけを表示し、書き込みません。"),
+    force: bool = typer.Option(False, "--force", help="競合前に安全バックアップを作成してから上書きします。"),
+) -> None:
+    """検証済みバックアップを安全に復元します。"""
+    base = _root(root)
+    try:
+        result = restore_backup(base, backup_file, dry_run=dry_run, force=force)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"復元できませんでした: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("復元前確認" if dry_run else "復元しました")
+    typer.echo(f"復元予定ファイル: {len(result['files'])}件")
+    typer.echo(f"新規作成: {len(result['new_files'])}件")
+    typer.echo(f"競合: {len(result['conflicts'])}件")
+    typer.echo(f"スキップ: {len(result['skipped'])}件")
+    if result["conflicts"]:
+        for name in result["conflicts"]:
+            typer.echo(f"- {name}")
+    if dry_run:
+        typer.echo("dry-runのため書き込んでいません。")
+    elif result.get("safety_backup"):
+        typer.echo(f"上書き前バックアップ: {result['safety_backup']}")
+
+
+@app.command()
+def doctor(root: Path | None = RootOption) -> None:
+    """保存構造とJSONを読み取り専用で点検します。"""
+    report = run_doctor(_root(root))
+    errors = [item for item in report["issues"] if item["level"] == "ERROR"]
+    warnings = [item for item in report["issues"] if item["level"] == "WARN"]
+    typer.echo("OK   ディレクトリ構造・テンプレート・JSONを点検しました")
+    typer.echo(f"OK   日次JSON {report['daily_count']}件")
+    for item in warnings + errors:
+        typer.echo(f"{item['level']} {item['message']}")
+    typer.echo(f"結果：WARN {len(warnings)}件、ERROR {len(errors)}件")
+    if errors:
+        raise typer.Exit(code=1)
 
 
 @app.command()

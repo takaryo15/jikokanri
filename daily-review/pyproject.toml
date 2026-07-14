@@ -1,6 +1,6 @@
 [project]
 name = "daily-review"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Local CLI for daily reviews, raw logs, tomorrow plans, and Tuesday-Monday weekly summaries."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,6 +23,9 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "daily_review.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

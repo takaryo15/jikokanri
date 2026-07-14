@@ -1,400 +1,150 @@
 # daily-review
 
-`daily-review` は、ChatGPTで作った毎日の振り返りと明日の指示書を、ローカルのJSONとMarkdownへ保存するPython CLIです。
+`daily-review` は、毎日の振り返り、翌日の指示書、実行結果をローカルのJSONとMarkdownに残すPython CLIです。v1.0.0では、週次・月次振り返りと、ローカルバックアップ・安全な復元・状態点検までを扱います。
 
-外部API、Notion、LINE、Googleカレンダー連携は使いません。ChatGPTで生成した文章やJSONをCLIへ貼り付けて、提案版と確定版を分けて管理します。
+## 設計思想
 
-## インストール
+- 生ログは加工せず保存します。
+- 提案版と確定版を分け、`approve-plan` だけが確定版を作成します。
+- Mainは最大3つ、各タスクには最低ラインが必要です。
+- carryoverと改善提案は表示のみで、翌日の計画へ自動追加しません。
+- 外部API、Notion、Google Calendar、LINE、LLM呼び出しは使いません。
 
-Python 3.11以上を使います。
+## インストールと初期設定
+
+Python 3.11以上が必要です。
 
 ```bash
 cd daily-review
 python3 -m pip install -e ".[test]"
-```
-
-インストールせずに試す場合:
-
-```bash
-cd daily-review
-PYTHONPATH=src python3 -m daily_review.cli --help
-```
-
-## 初期化
-
-```bash
+daily-review --version
 daily-review init
 ```
 
-作成される保存先:
+保存先は既定でカレントディレクトリです。別の保存先を使うときは、各コマンドに `--root /path/to/root` を付けます。`init` は既存のデータとテンプレートを上書きしません。
 
-```text
-data/daily/
-data/weekly/
-data/monthly/
-logs/
-templates/
-```
+## 毎日の運用
 
-すでに存在するディレクトリやテンプレートは削除・上書きしません。
-
-保存先を変えたい場合は各コマンドで `--root /path/to/root` を指定できます。
-
-## 最短の毎日運用
-
-毎朝:
+朝は確定済み指示書を確認します。
 
 ```bash
 daily-review today
 ```
 
-毎晩:
+夜は、結果を含むJSONをChatGPTで作成し、保存前確認をしてから保存します。提案版を見て、自分で承認してください。
 
 ```bash
 daily-review today --show-ids
-# ChatGPTへ振り返りを送り、出力JSONをコピーする
 daily-review close-day --clipboard --dry-run
 daily-review close-day --clipboard
 daily-review show-proposal
 daily-review approve-plan
 ```
 
-迷った場合:
+個別保存が必要な場合は、`save-raw`、`save-review`、`save-proposal`、`save-night`、`record-results` も利用できます。次の操作が分からないときは、まず `daily-review start` を実行してください。`start` は保存状態を読むだけで変更せず、必要な次のコマンドを案内します。指定日の確認には `daily-review start --date YYYY-MM-DD`、保存状況の詳細には `daily-review status --date YYYY-MM-DD` を使えます。従来の `daily-review next` も同じ案内を表示します。
 
-```bash
-daily-review next
-```
+## 週次・月次振り返り
 
-## 基本の流れ
-
-朝:
-
-```bash
-daily-review today
-```
-
-今日の確定済みタスクを見ます。夜にChatGPTへタスク結果を渡す場合は、ID付きで表示します。
-
-```bash
-daily-review today --date 2026-07-14 --show-ids
-```
-
-夜:
-
-1. ChatGPTへ夜の振り返りを送る
-2. ChatGPTが1つの `night.json` を出力する
-3. `close-day --dry-run` で保存前確認をする
-4. `close-day` で当日の結果、振り返り、翌日提案を一括保存する
-5. 提案版を確認する
-6. OKなら `approve-plan` で承認する
-7. 翌朝に `today` で確認する
-
-```bash
-daily-review today --date 2026-07-14 --show-ids
-daily-review close-day --date 2026-07-14 --clipboard --dry-run
-daily-review close-day --date 2026-07-14 --clipboard
-daily-review show-proposal --date 2026-07-14
-daily-review approve-plan --date 2026-07-14
-daily-review today
-```
-
-未完了確認:
-
-```bash
-daily-review carryover --date 2026-07-14
-```
-
-`carryover` は引き継ぎ候補を表示するだけです。翌日の提案版や確定版へは自動追加しません。
-
-## 毎晩の保存
-
-日付を明示したい場合:
-
-```bash
-daily-review close-day --date 2026-07-14 --file night.json
-```
-
-`close-day` は `--file` を省略すると標準入力から貼り付けできます。入力後は `Ctrl-D` で保存します。
-
-```bash
-cat night.json | daily-review close-day --date 2026-07-14
-```
-
-macOSでは、ChatGPTのJSONをコピーしてクリップボードから直接読み込めます。
-
-```bash
-daily-review close-day --clipboard --dry-run
-daily-review close-day --clipboard
-```
-
-Markdownコードブロックだけをコピーした場合も、入力全体が1つのJSONコードブロックなら読み込めます。説明文が混じっている場合は保存せずエラーになります。
-
-保存後は、日次JSONとMarkdownの保存先、次に実行するコマンドが表示されます。保存内容をざっと確認したいときは次を使います。
-
-```bash
-daily-review status --date 2026-07-13
-daily-review list --limit 7
-```
-
-日次Markdownは `logs/YYYY-MM-DD.md` に作成されます。生ログ、日記、今日のMain、最低ライン、崩れた原因、提案版、確定版を1ファイルで見返せます。
-
-`close-day` は当日のタスク結果、夜の振り返り、翌日の提案版をまとめて保存します。翌日の提案版は未承認のままで、確定版は `approve-plan` を実行したときだけ作られます。
-
-`save-night` は詳細・トラブル対応用として残しています。`save-night` は生ログ、日記、整形ログ、翌日提案のみを保存し、タスク結果は保存しません。
-
-## 個別に保存する場合
-
-`save-night` を使わず、各ファイルを分けて保存することもできます。
-
-```bash
-daily-review save-raw --date 2026-07-13 --file raw.txt
-daily-review save-review --date 2026-07-13 --file review.json
-daily-review save-proposal --date 2026-07-13 --file proposal.json
-daily-review status --date 2026-07-13
-daily-review validate --date 2026-07-13
-daily-review approve-plan --date 2026-07-13
-```
-
-## 朝の使い方
-
-```bash
-daily-review today
-```
-
-朝は表示された確定版を見るだけです。朝に新しく計画を作り直す前提にはしていません。
-
-任意の日付を見る場合:
-
-```bash
-daily-review today --date 2026-07-14
-```
-
-`today` は保存元の日付ではなく、確定版指示書の `target_date` で探します。
-
-## 月曜日夜の週次振り返り
+週次は火曜日始まり・月曜日終わりです。`--date` を指定すると、その日を含む週または暦月を集計します。
 
 ```bash
 daily-review weekly
+daily-review weekly --date 2026-07-13
+daily-review monthly
+daily-review monthly --date 2026-07-14
 ```
 
-`--date` で指定した日を含む、火曜日始まり・月曜日終わりの週を集計します。
+集計結果はJSONとMarkdownの両方に保存されます。結果未記録は未着手として扱わず分離し、最低ラインを確実に判定できない場合は「算出不可」と表示します。
 
-例:
+## バックアップ
+
+`backup` は `data/`、`logs/`、`templates/` をZIPへ保存します。ソースコードや仮想環境は含めません。アーカイブにはファイル一覧、SHA-256、作成日時、形式バージョンを含む `manifest.json` が入ります。
 
 ```bash
-daily-review weekly --date 2026-07-13
+daily-review backup
+daily-review backup --output /path/to/backups
+daily-review backup --output /path/to/daily-review.zip
 ```
 
-対象期間は `2026-07-07` から `2026-07-13` です。
+既定の保存先は `backups/daily-review-backup-YYYYMMDD-HHMMSS.zip` です。同名ファイルは上書きしません。元データは変更しません。
 
-## JSON入力例
+## 復元
 
-`close-day` 用 `night.json`:
+まず内容だけを確認してください。
 
-```json
-{
-  "date": "2026-07-14",
-  "raw_log": "今日は院試の過去問を大問1つ解いた。研究はRGS1だけ確認した。",
-  "diary": "少し疲れていたが、院試を進められたのはよかった。",
-  "task_results": [
-    {
-      "task_id": "task-1",
-      "status": "completed",
-      "note": "大問1を最後まで解いた",
-      "minimum_line_achieved": true
-    }
-  ],
-  "structured_review": {
-    "today_main": [
-      {
-        "area": "院試",
-        "status": "完了",
-        "note": "過去問の大問1を解いた"
-      }
-    ],
-    "minimum_line": {
-      "院試": "達成"
-    },
-    "what_went_well": ["学校に行けた"],
-    "breakdown_causes": ["スマホ"],
-    "one_change_tomorrow": "朝イチで過去問を開く"
-  },
-  "tomorrow_plan_proposal": {
-    "target_date": "2026-07-15",
-    "main": ["院試", "研究", "筋トレ・健康"],
-    "tasks": [
-      {
-        "area": "院試",
-        "task": "過去問の次の大問を1つ解く",
-        "priority": 1,
-        "minimum_line": "問題文を開く"
-      }
-    ],
-    "one_change_tomorrow": "帰宅前に過去問を開く"
-  }
-}
+```bash
+daily-review restore path/to/backup.zip --dry-run
 ```
 
-`record-results` 用 `task_results.json`:
+通常の復元は、対象ファイルが1件でも既存なら停止します。これにより既存データを無断で上書きしません。
 
-```json
-{
-  "task_results": [
-    {
-      "task_id": "task-1",
-      "status": "completed",
-      "note": "大問1を最後まで解いた",
-      "minimum_line_achieved": true
-    },
-    {
-      "task_id": "task-2",
-      "status": "partial",
-      "note": "RGS1だけ確認した",
-      "minimum_line_achieved": true
-    }
-  ]
-}
+```bash
+daily-review restore path/to/backup.zip
 ```
 
-`review.json`:
+意図的に上書きする必要がある場合だけ `--force` を指定できます。この場合は復元前に `backups/pre-restore-YYYYMMDD-HHMMSS.zip` を自動作成します。
 
-```json
-{
-  "diary": "任意の日記",
-  "structured_review": {
-    "today_main": [
-      {
-        "area": "院試",
-        "status": "一部進んだ",
-        "note": "過去問を少し見た"
-      }
-    ],
-    "minimum_line": {
-      "院試": "達成",
-      "研究": "未達"
-    },
-    "what_went_well": ["学校に行けた"],
-    "breakdown_causes": ["眠気", "スマホ"],
-    "one_change_tomorrow": "朝イチで過去問を開く"
-  }
-}
+```bash
+daily-review restore path/to/backup.zip --force
 ```
 
-`proposal.json`:
+復元前にZIP、manifest、形式バージョン、パス、SHA-256を検証します。不正なZIP、絶対パス、パストラバーサル、対象外パス、ハッシュ不一致は書き込み前に拒否します。
 
-```json
-{
-  "target_date": "2026-07-14",
-  "main": ["院試", "研究", "健康"],
-  "tasks": [
-    {
-      "area": "院試",
-      "task": "過去問 大問1つ",
-      "priority": 1,
-      "minimum_line": "問題文だけ読む"
-    }
-  ],
-  "one_change_tomorrow": "朝イチで過去問を開く"
-}
+## doctor
+
+`doctor` はデータを変更せず、ディレクトリ、テンプレート、日次・週次・月次JSON、Markdown対応、Main数、最低ライン、task_resultsのstatusを点検します。
+
+```bash
+daily-review doctor
 ```
 
-`save-proposal` 実行時に `status` は必ず `pending_review` として保存されます。
+`WARN` は不足したMarkdownなど、`ERROR` は読めないJSONや不正な計画を示します。古いJSONに新規フィールドがないことだけではエラーにしません。
 
-## 全コマンド
-
-```text
-daily-review init
-daily-review close-day --date YYYY-MM-DD [--file night.json | --clipboard] [--dry-run]
-daily-review save-night --date YYYY-MM-DD [--file night.json]
-daily-review save-raw --date YYYY-MM-DD [--file raw.txt]
-daily-review save-review --date YYYY-MM-DD [--file review.json]
-daily-review save-proposal --date YYYY-MM-DD [--file proposal.json]
-daily-review approve-plan --date YYYY-MM-DD [--force]
-daily-review today [--date YYYY-MM-DD] [--show-ids]
-daily-review show-proposal --date YYYY-MM-DD
-daily-review record-results --date YYYY-MM-DD [--file task_results.json]
-daily-review results --date YYYY-MM-DD
-daily-review carryover --date YYYY-MM-DD [--include-skipped]
-daily-review status --date YYYY-MM-DD
-daily-review list [--limit 7]
-daily-review validate --date YYYY-MM-DD
-daily-review weekly [--date YYYY-MM-DD]
-daily-review monthly [--date YYYY-MM-DD]
-daily-review next [--date YYYY-MM-DD]
-```
-
-## 提案版と確定版の違い
-
-提案版は、ChatGPTが作った明日の指示書の候補です。`save-proposal` で保存しても、朝に見る確定版にはなりません。
-
-確定版は、ユーザーが `approve-plan` を実行したときだけ作られます。確定版には `status: approved` と `approved_at` が保存されます。
-
-## データ保存場所
-
-日次JSON:
+## 保存構造とJSON
 
 ```text
 data/daily/YYYY-MM-DD.json
-```
-
-日次Markdown:
-
-```text
-logs/YYYY-MM-DD.md
-```
-
-週次JSON:
-
-```text
 data/weekly/YYYY-MM-DD_YYYY-MM-DD.json
-```
-
-週次Markdown:
-
-```text
+data/monthly/YYYY-MM.json
+logs/YYYY-MM-DD.md
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
+logs/monthly_YYYY-MM.md
+templates/
+backups/
 ```
 
-月次JSONとMarkdownはそれぞれ `data/monthly/YYYY-MM.json` と `logs/monthly_YYYY-MM.md` に保存されます。
+日次JSONには生ログ、整形済み振り返り、提案版、確定版、タスク結果を必要に応じて保存します。新しい任意フィールドがなくても既存JSONは読み込めます。未知の追加フィールドを一括削除・変換することはありません。
 
-JSON更新は一時ファイルへ書き出してから置き換えるため、保存途中の失敗で既存データを壊しにくい設計です。
+## 安全設計
 
-## バックアップ方法
+日次JSONの更新は一時ファイルを経由します。バックアップは読み取り専用、復元は検証後に実行し、既定では競合を停止します。`proposal` の自動承認、carryoverの自動追加、改善提案の自動反映は行いません。
 
-`data/` と `logs/` をまとめてコピーしてください。
+## トラブルシューティング
 
-```bash
-cp -R data logs backup-$(date +%Y%m%d)
-```
+- 保存状態を確認する: `daily-review status --date YYYY-MM-DD`
+- データ全体を点検する: `daily-review doctor`
+- 次の操作を確認する: `daily-review next`
+- 日次運用を開始する: `daily-review start`
+- 復元対象を確認する: `daily-review restore path/to/backup.zip --dry-run`
+- CLIの一覧を確認する: `daily-review --help`
 
-Gitで管理する場合も、最低限 `data/` と `logs/` が残っていれば記録を復元できます。
+## v1で実装しないもの
 
-## よくあるエラー
+外部サービス連携、通知、LLM呼び出し、自動承認、自動計画変更はv1の対象外です。
 
-`target_dateはYYYY-MM-DDにしてください`:
-保存元の日付の翌日を `target_date` にしてください。例: `2026-07-13` の夜なら `2026-07-14`。
-
-`Mainは最大3つです`:
-Mainを3つ以内に減らしてください。
-
-`タスクに最低ラインがありません`:
-すべてのタスクに `minimum_line` を追加してください。
-
-`提案版がないため承認できません`:
-先に `save-proposal` を実行してください。
-
-`提案版のみです。まだ未承認です`:
-朝に見るには、前夜の記録で `approve-plan` を実行してください。
-
-## テスト
+## 開発・テスト
 
 ```bash
 cd daily-review
 pytest
+daily-review --help
+daily-review --version
 ```
 
-または:
+## バージョン
 
 ```bash
-python3 -m pytest
+daily-review --version
 ```
+
+現在のv1リリースは `1.0.0` です。
