@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import platform
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -61,16 +63,64 @@ def _read_text_from_file_or_stdin(file: Path | None) -> str:
 
 
 def _read_json_from_file_or_stdin(file: Path | None) -> dict[str, Any]:
+    source = str(file) if file else "標準入力"
+    text = file.read_text(encoding="utf-8") if file else _read_stdin_json_text()
+    return _parse_json_text(text, source)
+
+
+def _read_stdin_json_text() -> str:
+    typer.echo("JSONを貼り付けてください。終わったら Ctrl-D で保存します。", err=True)
+    return sys.stdin.read()
+
+
+def _read_clipboard_text() -> str:
+    if platform.system() != "Darwin":
+        raise typer.BadParameter("クリップボード入力はmacOSのみ対応しています。--file または標準入力を使ってください。")
     try:
-        if file:
-            return json.loads(file.read_text(encoding="utf-8"))
-        typer.echo("JSONを貼り付けてください。終わったら Ctrl-D で保存します。", err=True)
-        return json.loads(sys.stdin.read())
+        result = subprocess.run(["pbpaste"], check=True, capture_output=True, text=True)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise typer.BadParameter("クリップボードを読み取れませんでした。--file または標準入力を使ってください。") from exc
+    if not result.stdout.strip():
+        raise typer.BadParameter("クリップボードが空です。ChatGPTのJSONをコピーしてから再実行してください。")
+    return result.stdout
+
+
+def _strip_single_json_code_block(text: str, source: str) -> str:
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        if "```" in stripped and not stripped.startswith(("{", "[")):
+            raise typer.BadParameter(
+                f"{source} はJSONコードブロック以外の説明文を含んでいます。JSONだけをコピーしてください。"
+            )
+        return text
+    lines = stripped.splitlines()
+    fence_indexes = [index for index, line in enumerate(lines) if line.strip().startswith("```")]
+    if len(fence_indexes) != 2 or fence_indexes[0] != 0 or fence_indexes[1] != len(lines) - 1:
+        raise typer.BadParameter(
+            f"{source} はJSONコードブロック以外の説明文、または複数のコードブロックを含んでいます。JSONだけをコピーしてください。"
+        )
+    opening = lines[0].strip().lower()
+    if opening not in {"```", "```json"}:
+        raise typer.BadParameter(f"{source} のコードブロック種別はjsonだけ対応しています。")
+    return "\n".join(lines[1:-1])
+
+
+def _parse_json_text(text: str, source: str) -> dict[str, Any]:
+    cleaned = _strip_single_json_code_block(text, source)
+    try:
+        return json.loads(cleaned)
     except json.JSONDecodeError as exc:
-        source = str(file) if file else "標準入力"
         raise typer.BadParameter(
             f"JSONの形式が不正です: {source} の {exc.lineno}行{exc.colno}列付近（{exc.msg}）"
         ) from exc
+
+
+def _read_json_for_command(file: Path | None, clipboard: bool) -> dict[str, Any]:
+    if file and clipboard:
+        raise typer.BadParameter("--file と --clipboard は同時に指定できません。どちらか一方だけ使ってください。")
+    if clipboard:
+        return _parse_json_text(_read_clipboard_text(), "クリップボード")
+    return _read_json_from_file_or_stdin(file)
 
 
 def _format_validation_error(exc: ValidationError) -> str:
@@ -99,6 +149,15 @@ def _print_validation(result: ValidationResult) -> None:
     typer.echo("エラー")
     for item in result.errors or ["なし"]:
         typer.echo(f"- {item}")
+
+
+def _print_save_error(problem: str, fix: str = "JSONを修正してから、もう一度dry-runしてください。") -> None:
+    typer.echo("保存できませんでした。", err=True)
+    typer.echo("問題:", err=True)
+    typer.echo(f"- {problem}", err=True)
+    typer.echo("修正:", err=True)
+    typer.echo(f"- {fix}", err=True)
+    typer.echo("既存データは変更されていません。", err=True)
 
 
 def _ensure_task_ids(plan: dict[str, Any]) -> bool:
@@ -328,8 +387,7 @@ def _prepare_close_day(
         raise typer.BadParameter("tomorrow_plan_proposalはJSONオブジェクトにしてください。")
     plan_payload, plan_result = _build_pending_plan(proposal_payload, day)
     if plan_result.has_errors:
-        _print_validation(plan_result)
-        raise typer.Exit(code=1)
+        raise typer.BadParameter(" / ".join(plan_result.errors))
     warnings.extend(plan_result.warnings)
 
     entries_by_day: dict[str, dict[str, Any]] = {}
@@ -347,9 +405,7 @@ def _prepare_close_day(
         updates = _parse_task_results({"task_results": raw_task_results})
         errors, result_warnings = _validate_task_results_payload(updates, source_plan)
         if errors:
-            for error in errors:
-                typer.echo(f"エラー: {error}", err=True)
-            raise typer.Exit(code=1)
+            raise typer.BadParameter(" / ".join(errors))
         warnings.extend(result_warnings)
         source_entry["tomorrow_plan_final"] = source_plan
         source_entry["task_results"] = _merge_task_results(source_entry.get("task_results") or [], updates)
@@ -597,14 +653,19 @@ def save_night(
 def close_day(
     date: str | None = DateOption,
     file: Path | None = typer.Option(None, "--file", help="当日の結果・振り返り・翌日提案の一括JSON"),
+    clipboard: bool = typer.Option(False, "--clipboard", help="macOSのクリップボードからJSONを読み込む"),
     dry_run: bool = typer.Option(False, "--dry-run", help="検証と更新予定の表示だけ行い、保存しない"),
     root: Path | None = RootOption,
 ) -> None:
     """当日の結果、夜の振り返り、翌日の提案版を安全に一括保存します。"""
     base = _root(root)
-    payload = _read_json_from_file_or_stdin(file)
-    day = _resolve_night_date(date, payload)
-    entries_by_day, warnings, result_count, result_source_day = _prepare_close_day(base, day, payload)
+    try:
+        payload = _read_json_for_command(file, clipboard)
+        day = _resolve_night_date(date, payload)
+        entries_by_day, warnings, result_count, result_source_day = _prepare_close_day(base, day, payload)
+    except typer.BadParameter as exc:
+        _print_save_error(str(exc))
+        raise typer.Exit(code=1) from exc
 
     if dry_run:
         _print_close_day_dry_run(base, day, entries_by_day, result_count, warnings)
@@ -671,10 +732,12 @@ def approve_plan(
     entry["tomorrow_plan_final"] = final
     json_path = save_daily(base, day, entry)
     markdown_path = _regenerate_daily_markdown(base, day, entry)
+    typer.echo(f"指示書を承認しました｜対象日 {final['target_date']}")
+    typer.echo("翌朝:")
+    typer.echo(f"daily-review today --date {final['target_date']}")
     typer.echo(f"確定版を保存しました: {json_path}")
     typer.echo(f"Markdownを更新しました: {markdown_path}")
     _print_validation(final_result)
-    typer.echo(f"明日の朝: daily-review today --date {final['target_date']}")
 
 
 def _find_plan_by_target(root: Path, target_date: str) -> tuple[dict[str, Any] | None, dict[str, Any] | None, str | None]:
@@ -852,6 +915,44 @@ def show_proposal(
         typer.echo(f"{day} の提案版はまだありません。", err=True)
         raise typer.Exit(code=1)
     _print_plan_summary("明日の指示書・提案版", entry["tomorrow_plan_proposal"], "未承認")
+    typer.echo("承認する場合:")
+    typer.echo(f"daily-review approve-plan --date {day}")
+
+
+@app.command("next")
+def next_action(
+    date: str | None = DateOption,
+    root: Path | None = RootOption,
+) -> None:
+    """保存状態から次に実行するコマンドをルールベースで表示します。"""
+    base = _root(root)
+    day = _day(date)
+    entry = load_daily(base, day)
+
+    if entry and entry.get("tomorrow_plan_proposal") and not entry.get("tomorrow_plan_final"):
+        typer.echo("明日の指示書が未承認です。")
+        typer.echo(f"daily-review show-proposal --date {day}")
+        typer.echo(f"daily-review approve-plan --date {day}")
+        return
+
+    if entry and entry.get("tomorrow_plan_final"):
+        target = entry["tomorrow_plan_final"].get("target_date", tomorrow_of(day))
+        typer.echo("今日の夜の処理は完了しています。")
+        typer.echo("翌朝:")
+        typer.echo(f"daily-review today --date {target}")
+        return
+
+    _, today_plan, pending_source = _find_plan_by_target(base, day)
+    if today_plan and not pending_source:
+        typer.echo("今日の指示書があります。")
+        typer.echo(f"daily-review today --date {day}")
+        return
+
+    typer.echo("夜の振り返りが未保存です。")
+    typer.echo("1. ChatGPTへ今日の結果を送る")
+    typer.echo("2. JSONをコピーする")
+    typer.echo("3. 以下を実行する")
+    typer.echo("daily-review close-day --clipboard --dry-run")
 
 
 @app.command()

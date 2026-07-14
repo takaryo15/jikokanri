@@ -39,6 +39,31 @@ templates/
 
 保存先を変えたい場合は各コマンドで `--root /path/to/root` を指定できます。
 
+## 最短の毎日運用
+
+毎朝:
+
+```bash
+daily-review today
+```
+
+毎晩:
+
+```bash
+daily-review today --show-ids
+# ChatGPTへ振り返りを送り、出力JSONをコピーする
+daily-review close-day --clipboard --dry-run
+daily-review close-day --clipboard
+daily-review show-proposal
+daily-review approve-plan
+```
+
+迷った場合:
+
+```bash
+daily-review next
+```
+
 ## 基本の流れ
 
 朝:
@@ -65,8 +90,8 @@ daily-review today --date 2026-07-14 --show-ids
 
 ```bash
 daily-review today --date 2026-07-14 --show-ids
-daily-review close-day --date 2026-07-14 --file night.json --dry-run
-daily-review close-day --date 2026-07-14 --file night.json
+daily-review close-day --date 2026-07-14 --clipboard --dry-run
+daily-review close-day --date 2026-07-14 --clipboard
 daily-review show-proposal --date 2026-07-14
 daily-review approve-plan --date 2026-07-14
 daily-review today
@@ -93,6 +118,15 @@ daily-review close-day --date 2026-07-14 --file night.json
 ```bash
 cat night.json | daily-review close-day --date 2026-07-14
 ```
+
+macOSでは、ChatGPTのJSONをコピーしてクリップボードから直接読み込めます。
+
+```bash
+daily-review close-day --clipboard --dry-run
+daily-review close-day --clipboard
+```
+
+Markdownコードブロックだけをコピーした場合も、入力全体が1つのJSONコードブロックなら読み込めます。説明文が混じっている場合は保存せずエラーになります。
 
 保存後は、日次JSONとMarkdownの保存先、次に実行するコマンドが表示されます。保存内容をざっと確認したいときは次を使います。
 
@@ -269,7 +303,7 @@ daily-review weekly --date 2026-07-13
 
 ```text
 daily-review init
-daily-review close-day --date YYYY-MM-DD [--file night.json] [--dry-run]
+daily-review close-day --date YYYY-MM-DD [--file night.json | --clipboard] [--dry-run]
 daily-review save-night --date YYYY-MM-DD [--file night.json]
 daily-review save-raw --date YYYY-MM-DD [--file raw.txt]
 daily-review save-review --date YYYY-MM-DD [--file review.json]
@@ -284,6 +318,7 @@ daily-review status --date YYYY-MM-DD
 daily-review list [--limit 7]
 daily-review validate --date YYYY-MM-DD
 daily-review weekly [--date YYYY-MM-DD]
+daily-review next [--date YYYY-MM-DD]
 ```
 
 ## 提案版と確定版の違い
