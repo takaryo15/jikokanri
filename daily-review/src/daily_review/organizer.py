@@ -16,6 +16,22 @@ from .storage import draft_path, inbox_path, read_json_file
 
 PARSER_VERSION = "rule-v1"
 
+EDITABLE_DRAFT_FIELDS = (
+    "today.main_candidates",
+    "today.completed",
+    "today.partial",
+    "today.not_completed",
+    "reflection.good",
+    "reflection.problems",
+    "reflection.causes",
+    "reflection.change_next",
+    "tomorrow.main_candidates",
+    "tomorrow.other_tasks",
+    "tomorrow.minimum_candidates",
+    "journal",
+    "unclassified",
+)
+
 # Keep the prioritisation policy separate from the parsing rules.  It is used
 # only when choosing the three displayed Main candidates; source order remains
 # the order shown to the user.
@@ -49,6 +65,11 @@ def _empty_draft(day: str, *, created_at: str | None = None) -> dict[str, Any]:
         "updated_at": timestamp,
         "source_entry_ids": [],
         "parser_version": PARSER_VERSION,
+        "status": "draft",
+        "approved_at": None,
+        "approved_daily_path": None,
+        "revision": 0,
+        "edit_history": [],
         "today": {"main_candidates": [], "completed": [], "partial": [], "not_completed": []},
         "reflection": {"good": [], "problems": [], "causes": [], "change_next": []},
         "tomorrow": {"main_candidates": [], "other_tasks": [], "minimum_candidates": []},
@@ -129,6 +150,34 @@ def _ensure_shape(draft: dict[str, Any], day: str) -> dict[str, Any]:
             if not isinstance(result[group].get(key), list):
                 result[group][key] = deepcopy(default)
     return result
+
+
+def normalize_draft(draft: dict[str, Any], day: str) -> dict[str, Any]:
+    """Return a compatible draft shape without writing or migrating a file."""
+    return _ensure_shape(draft, day)
+
+
+def load_draft(root: Path, day: str) -> dict[str, Any] | None:
+    path = draft_path(root, day)
+    if not path.exists():
+        return None
+    value = read_json_file(path)
+    if not isinstance(value, dict) or value.get("date") not in (None, day):
+        raise ValueError("整理ドラフトの日付が不正です")
+    return normalize_draft(value, day)
+
+
+def add_draft_revision(draft: dict[str, Any], changed_fields: list[str]) -> None:
+    """Record a bounded audit trail for user edits and re-organization."""
+    revision = draft.get("revision", 0)
+    if not isinstance(revision, int) or revision < 0:
+        revision = 0
+    draft["revision"] = revision + 1
+    history = draft.get("edit_history")
+    if not isinstance(history, list):
+        history = []
+    history.append({"edited_at": now_iso(), "changed_fields": changed_fields})
+    draft["edit_history"] = history[-50:]
 
 
 def _classify_entries(entries: list[dict[str, Any]], draft: dict[str, Any]) -> None:
@@ -241,12 +290,7 @@ def organize_day(root: Path, day: str, *, force: bool = False) -> dict[str, Any]
         raise LookupError(f"{day}の入力がありません")
 
     path = draft_path(root, day)
-    existing: dict[str, Any] | None = None
-    if path.exists():
-        value = read_json_file(path)
-        if not isinstance(value, dict) or value.get("date") not in (None, day):
-            raise ValueError("整理ドラフトの日付が不正です")
-        existing = _ensure_shape(value, day)
+    existing = load_draft(root, day)
 
     if force or existing is None:
         # Unknown fields are retained when explicitly rebuilding an existing draft.
@@ -285,6 +329,12 @@ def organize_day(root: Path, day: str, *, force: bool = False) -> dict[str, Any]
     _refresh_candidates(draft, ordered_sentences)
     draft["date"] = day
     draft["parser_version"] = PARSER_VERSION
+    # A re-organized draft must be reviewed again.  Existing daily data remains
+    # untouched, so this does not revoke or delete a previous record.
+    draft["status"] = "draft"
+    draft["approved_at"] = None
+    draft["approved_daily_path"] = None
+    add_draft_revision(draft, ["organization"])
     draft["updated_at"] = now_iso()
     draft.setdefault("created_at", draft["updated_at"])
     classified_count, unclassified_count = _classification_counts(entries, draft)

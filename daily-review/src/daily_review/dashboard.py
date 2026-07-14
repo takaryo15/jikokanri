@@ -43,11 +43,18 @@ def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
     results = {item.get("task_id"): item for item in (final_entry or {}).get("task_results") or []}
     tasks = today_final.get("tasks") or [] if today_final else []
     recorded_results = sum(1 for task in tasks if task.get("id") in results)
+    draft_approval = entry.get("draft_approval") if isinstance(entry.get("draft_approval"), dict) else {}
+    draft_result_only = not today_final and isinstance(draft_approval.get("task_results"), list)
+    if draft_result_only:
+        results = {item.get("task_id"): item for item in draft_approval["task_results"] if isinstance(item, dict)}
+        tasks = list(results.values())
+        recorded_results = len(results)
     incomplete = []
-    for task in tasks:
-        result = results.get(task.get("id"))
-        if not result or result.get("status") != "completed":
-            incomplete.append({"task": task, "status": result.get("status") if result else None})
+    if not draft_result_only:
+        for task in tasks:
+            result = results.get(task.get("id"))
+            if not result or result.get("status") != "completed":
+                incomplete.append({"task": task, "status": result.get("status") if result else None})
     week_start, week_end = week_range_for(day)
     month_start, month_end = month_range_for(day)
     inbox_entries: list[Any] = []
@@ -74,7 +81,7 @@ def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
         "date": day,
         "entry": entry,
         "today_final": today_final or None,
-        "today_main": (today_final or {}).get("main") or [],
+        "today_main": (today_final or {}).get("main") or draft_approval.get("today_main") or [],
         "task_results": {"recorded": recorded_results, "total": len(tasks), "exists": bool(results)},
         "night_review_exists": bool(entry.get("raw_log") or entry.get("structured_review") or entry.get("diary")),
         "tomorrow_proposal": entry.get("tomorrow_plan_proposal"),
@@ -84,12 +91,15 @@ def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
         "incomplete_tasks": incomplete,
         "inbox_entry_count": len(inbox_entries),
         "draft": draft,
+        "draft_status": (draft or {}).get("status", "draft") if draft else None,
         "errors": list(dict.fromkeys(errors)),
     }
 
 
 def next_action_kind(summary: dict[str, Any]) -> str:
     entry = summary["entry"]
+    if summary.get("draft") and summary.get("draft_status") != "approved":
+        return "draft_review"
     if summary.get("inbox_entry_count") and not summary.get("draft"):
         return "organize"
     if entry.get("tomorrow_plan_proposal") and not entry.get("tomorrow_plan_final"):
@@ -114,4 +124,6 @@ def next_command(summary: dict[str, Any]) -> str:
         return f"daily-review today --date {day}"
     if kind == "organize":
         return f"daily-review organize --date {day}"
+    if kind == "draft_review":
+        return f"daily-review review --date {day}"
     return f"daily-review close-day --date {day} --clipboard --dry-run"

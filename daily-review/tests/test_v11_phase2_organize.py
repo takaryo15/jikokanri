@@ -152,7 +152,7 @@ def test_home_shows_inbox_and_draft_status_and_doctor_checks_drafts(tmp_path):
     assert runner.invoke(app, ["organize", "--date", DAY, "--root", str(tmp_path)]).exit_code == 0
     after = runner.invoke(app, ["home", "--date", DAY, "--root", str(tmp_path)])
     assert after.exit_code == 0
-    assert "整理ドラフト: 作成済み" in after.output
+    assert "整理ドラフト: 未承認" in after.output
     assert "今日のMain候補: 1件" in after.output
 
     assert runner.invoke(app, ["init", "--root", str(tmp_path)]).exit_code == 0

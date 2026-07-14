@@ -16,12 +16,14 @@ from . import __version__
 from .archive import create_backup, restore_backup
 from .date_utils import month_range_for, parse_date, today_string, tomorrow_of, week_range_for
 from .markdown import render_daily, render_monthly, render_weekly
-from .models import Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
+from .models import DailyEntry, Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
 from .storage import (
     atomic_write_json_many,
     atomic_write_json_data,
+    atomic_write_json_data_many,
     daily_path,
     daily_log_path,
+    draft_path,
     init_workspace,
     inbox_path,
     load_daily,
@@ -40,7 +42,8 @@ from .weekly import build_weekly_summary
 from .reporting import build_report, weekly_trends
 from .doctor import run_doctor
 from .dashboard import build_daily_summary, next_action_kind, next_command
-from .organizer import organize_day
+from .organizer import EDITABLE_DRAFT_FIELDS, load_draft, organize_day
+from .draft_workflow import backup_daily_before_reapproval, build_daily_from_draft, replace_draft_fields
 
 
 app = typer.Typer(
@@ -704,6 +707,213 @@ def organize(
         _print_organize_result(result, base, day, dry_run=dry_run)
 
 
+def _draft_or_error(base: Path, day: str) -> dict[str, Any]:
+    try:
+        draft = load_draft(base, day)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"ERROR: 整理ドラフトを読み込めません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    if not draft:
+        typer.echo(f"ERROR: {day}の整理ドラフトがありません", err=True)
+        typer.echo("先に daily-review organize を実行してください", err=True)
+        raise typer.Exit(code=2)
+    return draft
+
+
+def _print_draft_list(title: str, values: list[str], *, numbered: bool = False) -> None:
+    typer.echo(f"{title}:")
+    if not values:
+        typer.echo("なし")
+        return
+    for index, value in enumerate(values, start=1):
+        typer.echo(f"{index}. {value}" if numbered else f"- {value}")
+
+
+def _print_draft_review(draft: dict[str, Any], day: str) -> None:
+    today = draft["today"]
+    reflection = draft["reflection"]
+    tomorrow = draft["tomorrow"]
+    typer.echo(f"daily-review review｜{day}")
+    _print_draft_list("今日のMain候補", today["main_candidates"], numbered=True)
+    _print_draft_list("完了", today["completed"])
+    _print_draft_list("一部進行", today["partial"])
+    _print_draft_list("未完了", today["not_completed"])
+    _print_draft_list("良かったこと", reflection["good"])
+    _print_draft_list("問題", reflection["problems"])
+    _print_draft_list("原因", reflection["causes"])
+    _print_draft_list("明日変えること", reflection["change_next"])
+    _print_draft_list("明日のMain候補", tomorrow["main_candidates"], numbered=True)
+    _print_draft_list("明日のその他タスク", tomorrow["other_tasks"])
+    _print_draft_list("最低ライン候補", tomorrow["minimum_candidates"])
+    _print_draft_list("日記", draft["journal"])
+    _print_draft_list("未分類", draft["unclassified"])
+    approved = draft.get("status") == "approved"
+    typer.echo(f"状態: {'承認済み' if approved else '未承認'}")
+    if approved:
+        typer.echo(f"確定先: {draft.get('approved_daily_path') or '未記録'}")
+    else:
+        typer.echo("次の操作:")
+        typer.echo(f"daily-review approve --date {day}")
+
+
+@app.command("review")
+def review(
+    date: str | None = DateOption,
+    json_output: bool = typer.Option(False, "--json", help="ドラフトJSONをそのまま表示する"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="表示のみでファイルを変更しない"),
+    root: Path | None = RootOption,
+) -> None:
+    """整理ドラフトを確認用に表示します。"""
+    base = _root(root)
+    day = _day(date)
+    draft = _draft_or_error(base, day)
+    if json_output:
+        typer.echo(json.dumps(draft, ensure_ascii=False, indent=2))
+        return
+    _print_draft_review(draft, day)
+    if dry_run:
+        typer.echo("dry-runのためファイルを変更していません。")
+
+
+def _parse_draft_set_values(values: list[str]) -> dict[str, list[str]]:
+    replacements: dict[str, list[str]] = {}
+    for item in values:
+        if "=" not in item:
+            raise ValueError("--set は field=value の形式で指定してください")
+        field, value = item.split("=", 1)
+        if field not in EDITABLE_DRAFT_FIELDS:
+            raise ValueError(f"編集できないフィールドです: {field}")
+        replacements.setdefault(field, []).append(value)
+    return replacements
+
+
+def _interactive_draft_replacements(draft: dict[str, Any]) -> dict[str, list[str]]:
+    replacements: dict[str, list[str]] = {}
+    for field in EDITABLE_DRAFT_FIELDS:
+        group, key = field.split(".", 1) if "." in field else (None, field)
+        values = draft[group][key] if group else draft[key]
+        typer.echo(f"\n{field} の現在の内容:")
+        for index, value in enumerate(values, start=1):
+            typer.echo(f"{index}. {value}")
+        if not typer.confirm("変更しますか？", default=False):
+            continue
+        typer.echo("新しい値を1行ずつ入力してください。空行で終了（最初の空行で削除）:")
+        new_values: list[str] = []
+        while True:
+            value = typer.prompt("", default="", show_default=False)
+            if not value:
+                break
+            new_values.append(value)
+        replacements[field] = new_values
+    return replacements
+
+
+@app.command("edit-draft")
+def edit_draft(
+    date: str | None = DateOption,
+    set_values: list[str] = typer.Option([], "--set", help="field=value。複数指定時はその配列で置換する"),
+    force: bool = typer.Option(False, "--force", help="承認済みドラフトを編集可能に戻す"),
+    root: Path | None = RootOption,
+) -> None:
+    """整理ドラフトの許可済み配列フィールドを置換編集します。"""
+    base = _root(root)
+    day = _day(date)
+    draft = _draft_or_error(base, day)
+    try:
+        replacements = _parse_draft_set_values(set_values) if set_values else _interactive_draft_replacements(draft)
+        if not replacements:
+            typer.echo("変更はありません。")
+            return
+        changed = replace_draft_fields(draft, replacements, force=force)
+    except PermissionError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    except ValueError as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+    if not changed:
+        typer.echo("変更はありません。")
+        return
+    if not set_values and not typer.confirm("この変更を保存しますか？", default=False):
+        typer.echo("編集をキャンセルしました")
+        return
+    try:
+        atomic_write_json_data(draft_path(base, day), draft)
+    except OSError as exc:
+        typer.echo(f"ERROR: 整理ドラフトを保存できません: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+    typer.echo("整理ドラフトを更新しました")
+    typer.echo("変更項目: " + ", ".join(changed))
+    typer.echo(f"revision: {draft['revision']}")
+
+
+def _print_approval_preview(draft: dict[str, Any]) -> None:
+    typer.echo("以下の内容を確定します。")
+    _print_draft_list("今日のMain", draft["today"]["main_candidates"], numbered=True)
+    _print_draft_list("明日のMain", draft["tomorrow"]["main_candidates"], numbered=True)
+
+
+@app.command("approve")
+def approve(
+    date: str | None = DateOption,
+    yes: bool = typer.Option(False, "--yes", help="確認を省略して承認する"),
+    force: bool = typer.Option(False, "--force", help="承認済みドラフトをバックアップ後に再承認する"),
+    root: Path | None = RootOption,
+) -> None:
+    """確認済みの整理ドラフトを日次記録と翌日提案へ保存します。"""
+    base = _root(root)
+    day = _day(date)
+    draft = _draft_or_error(base, day)
+    if draft.get("status") not in {"draft", "approved"}:
+        typer.echo("ERROR: 整理ドラフトのstatusが不正です", err=True)
+        raise typer.Exit(code=3)
+    if draft.get("status") == "approved" and not force:
+        typer.echo("このドラフトはすでに承認済みです")
+        typer.echo(f"確定先: {draft.get('approved_daily_path') or '未記録'}")
+        return
+    if not yes:
+        if _stdin_is_piped():
+            typer.echo("ERROR: 非対話環境では --yes なしで承認できません", err=True)
+            raise typer.Exit(code=2)
+        _print_approval_preview(draft)
+        if not typer.confirm("確定しますか？", default=False):
+            typer.echo("承認をキャンセルしました")
+            return
+    try:
+        current_entry = load_daily(base, day) or {}
+        daily_entry = build_daily_from_draft(current_entry, day, draft)
+        stamped_daily = _stamp_entry_for_write(day, daily_entry)
+        DailyEntry.model_validate(stamped_daily)
+    except (OSError, ValueError, ValidationError) as exc:
+        typer.echo(f"ERROR: ドラフトを日次データへ変換できません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+
+    backup_path: Path | None = None
+    if force and draft.get("status") == "approved":
+        try:
+            backup_path = backup_daily_before_reapproval(base, day)
+        except OSError as exc:
+            typer.echo(f"ERROR: 再承認前バックアップを作成できません: {exc}", err=True)
+            raise typer.Exit(code=4) from exc
+    draft["status"] = "approved"
+    draft["approved_at"] = now_iso()
+    draft["approved_daily_path"] = str(daily_path(base, day).relative_to(base))
+    draft["updated_at"] = now_iso()
+    try:
+        atomic_write_json_data_many(
+            [(daily_path(base, day), stamped_daily), (draft_path(base, day), draft)]
+        )
+        markdown_path = _regenerate_daily_markdown(base, day, stamped_daily)
+    except OSError as exc:
+        typer.echo(f"ERROR: 承認内容を保存できません: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+    typer.echo(f"ドラフトを承認しました｜{day}")
+    typer.echo(f"確定先: {draft['approved_daily_path']}")
+    typer.echo(f"Markdownを更新しました: {markdown_path}")
+    if backup_path:
+        typer.echo(f"再承認前バックアップ: {backup_path.relative_to(base)}")
+
+
 @app.command("save-raw")
 def save_raw(
     date: str | None = DateOption,
@@ -1124,6 +1334,10 @@ def _print_next_action(base: Path, day: str, *, include_date: bool = False) -> N
         typer.echo("自然文入力が未整理です。")
         typer.echo(f"daily-review organize --date {day}")
         return
+    if action == "draft_review":
+        typer.echo("整理ドラフトが未承認です。")
+        typer.echo(f"daily-review review --date {day}")
+        return
     if action == "proposal":
         typer.echo("明日の指示書が未承認です。")
         typer.echo(f"daily-review show-proposal --date {day}")
@@ -1163,7 +1377,7 @@ def _print_summary(summary: dict[str, Any], *, title: str = "状況") -> None:
             typer.echo(f"{index}. {item}")
     else:
         typer.echo("未記録")
-    result_label = f"{results['recorded']}/{results['total']}件" if today_final else "未記録"
+    result_label = f"{results['recorded']}/{results['total']}件" if today_final or results["total"] else "未記録"
     typer.echo(f"タスク結果: {result_label}")
     typer.echo(f"夜の振り返り: {'記録済み' if summary['night_review_exists'] else '未記録'}")
     typer.echo(f"明日の提案版: {'記録済み' if proposal else '未記録'}")
@@ -1171,7 +1385,13 @@ def _print_summary(summary: dict[str, Any], *, title: str = "状況") -> None:
     typer.echo(f"今週の記録日数: {summary['week_recorded_days']}日")
     typer.echo(f"今月の記録日数: {summary['month_recorded_days']}日")
     typer.echo(f"自然文入力: {summary['inbox_entry_count']}件")
-    typer.echo(f"整理ドラフト: {'作成済み' if summary['draft'] else '未作成'}")
+    if not summary["draft"]:
+        draft_label = "未作成"
+    elif summary.get("draft_status") == "approved":
+        draft_label = "承認済み"
+    else:
+        draft_label = "未承認"
+    typer.echo(f"整理ドラフト: {draft_label}")
     typer.echo(f"次の操作: {next_command(summary)}")
 
 
@@ -1215,6 +1435,8 @@ def home(
         tomorrow_candidates = (draft.get("tomorrow") or {}).get("main_candidates") or []
         typer.echo(f"今日のMain候補: {len(today_candidates)}件")
         typer.echo(f"明日のMain候補: {len(tomorrow_candidates)}件")
+        if report.get("draft_status") == "approved":
+            typer.echo("確定日次: 作成済み")
     doctor_report = run_doctor(base)
     errors = [item for item in doctor_report["issues"] if item["level"] == "ERROR"]
     if errors:

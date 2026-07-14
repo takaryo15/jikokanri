@@ -37,6 +37,22 @@ daily-review organize --date 2026-07-14 --json
 
 同じ入力を再度整理しても書き換えず、新しいinbox入力がある場合だけドラフトへ追記します。全入力から作り直したい場合だけ `--force` を使います。ドラフトの候補を既存の確定データへ反映する操作は、後続フェーズでユーザー確認を前提に追加予定です。
 
+### ドラフトを確認・修正・承認する
+
+整理ドラフトは自動確定されません。`review` で確認し、必要なら `edit-draft` で修正してから、明示的に `approve` してください。承認されると、その日の既存日次JSONへ互換的に保存され、明日の内容は未承認の提案版として保存されます。確定版への自動昇格は行いません。
+
+```bash
+daily-review review --date 2026-07-14
+daily-review review --date 2026-07-14 --json
+daily-review edit-draft --date 2026-07-14 --set tomorrow.main_candidates="院試の過去問を2問解く"
+daily-review approve --date 2026-07-14
+daily-review approve --date 2026-07-14 --yes
+```
+
+`--set` を同じフィールドへ複数回指定すると、その指定順の配列で置換します。空文字で空配列に置換できます。編集できるのは候補・振り返り・日記・未分類だけで、入力原文、作成日時、承認状態は編集できません。承認済みドラフトは通常編集不可です。`edit-draft --force` はドラフトを未承認へ戻しますが、既存の日次データを削除しません。
+
+承認済みドラフトを `approve --force --yes` で再承認する場合は、先に `data/backups/daily/` へ日次JSONのバックアップを作成します。ドラフトはルールベースの候補であり、判断できない文章は未分類のまま残ります。後続フェーズではユーザー確認を前提に、より詳細な取り込みを追加予定です。
+
 ## 設計思想
 
 - 生ログは加工せず保存します。
@@ -105,6 +121,9 @@ daily-review approve-plan
 | `doctor` | 保存構造とデータを読み取り専用で点検 |
 | `input` | 自然文の原文をinboxへ追記保存 |
 | `organize` | inboxをルールベースの確認用ドラフトへ整理 |
+| `review` | 整理ドラフトを確認表示 |
+| `edit-draft` | 許可済みのドラフト配列を置換編集 |
+| `approve` | 確認済みドラフトを日次記録と翌日提案へ保存 |
 
 `start`、`summary`、`home` は保存状態を読むだけで変更しません。指定日の確認には `daily-review start --date YYYY-MM-DD` または `daily-review summary --date YYYY-MM-DD` を使えます。
 
@@ -202,6 +221,7 @@ data/weekly/YYYY-MM-DD_YYYY-MM-DD.json
 data/monthly/YYYY-MM.json
 data/inbox/YYYY-MM-DD.json
 data/drafts/YYYY-MM-DD.json
+data/backups/daily/YYYY-MM-DD_TIMESTAMP.json
 logs/YYYY-MM-DD.md
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
 logs/monthly_YYYY-MM.md
@@ -210,6 +230,8 @@ backups/
 ```
 
 日次JSONには生ログ、整形済み振り返り、提案版、確定版、タスク結果を必要に応じて保存します。新しい任意フィールドがなくても既存JSONは読み込めます。未知の追加フィールドを一括削除・変換することはありません。
+
+ドラフト承認で保存する当日の候補・分類結果は、既存の `structured_review` と `tomorrow_plan_proposal` に反映します。確定版タスクに紐付かない当日結果、問題、未分類などは、後方互換な任意フィールド `draft_approval` に保存します。
 
 ## 個人データの扱い
 
@@ -222,6 +244,8 @@ backups/
 ## トラブルシューティング
 
 - 自然文を整理する: `daily-review organize --date YYYY-MM-DD --dry-run`
+- 整理ドラフトを確認する: `daily-review review --date YYYY-MM-DD`
+- ドラフトを承認する: `daily-review approve --date YYYY-MM-DD --yes`
 - 保存状態を確認する: `daily-review status --date YYYY-MM-DD`
 - 日次の短い一覧を見る: `daily-review summary --date YYYY-MM-DD`
 - 毎日の統合画面を見る: `daily-review home`

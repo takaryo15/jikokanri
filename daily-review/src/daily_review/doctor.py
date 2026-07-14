@@ -99,6 +99,7 @@ def run_doctor(root: Path) -> dict[str, Any]:
             except (OSError, ValueError) as exc:
                 issues.append(_issue("ERROR", f"inbox JSONを読み込めません: {path.name} ({exc})"))
     drafts_dir = root / "data" / "drafts"
+    draft_status_ok = True
     if drafts_dir.is_dir():
         for path in sorted(drafts_dir.glob("*.json")):
             try:
@@ -107,4 +108,31 @@ def run_doctor(root: Path) -> dict[str, Any]:
                     raise ValueError("source_entry_idsがありません")
             except (OSError, ValueError) as exc:
                 issues.append(_issue("ERROR", f"draft JSONを読み込めません: {path.name} ({exc})"))
+                draft_status_ok = False
+                continue
+            status = value.get("status")
+            if status is None:
+                issues.append(_issue("WARN", f"{path.name}: statusがありません（旧ドラフトとしてdraft扱いです）"))
+            elif status not in {"draft", "approved"}:
+                issues.append(_issue("ERROR", f"{path.name}: draft statusが不正です（{status}）"))
+                draft_status_ok = False
+            elif status == "approved":
+                if not isinstance(value.get("approved_at"), str) or not value["approved_at"].strip():
+                    issues.append(_issue("ERROR", f"{path.name}: approvedなのにapproved_atがありません"))
+                    draft_status_ok = False
+                approved_path = value.get("approved_daily_path")
+                target = root / approved_path if isinstance(approved_path, str) else None
+                if not approved_path or not target or not target.is_file():
+                    issues.append(_issue("ERROR", f"{path.name}: approvedなのに確定日次ファイルがありません"))
+                    draft_status_ok = False
+            elif value.get("approved_at") or value.get("approved_daily_path"):
+                issues.append(_issue("WARN", f"{path.name}: draftなのに承認情報が残っています"))
+            for field in ("today.main_candidates", "tomorrow.main_candidates"):
+                group, key = field.split(".", 1)
+                values = (value.get(group) or {}).get(key)
+                if isinstance(values, list) and len(values) > 3:
+                    issues.append(_issue("ERROR", f"{path.name}: {field} は最大3件です"))
+                    draft_status_ok = False
+    if drafts_dir.is_dir() and draft_status_ok:
+        checks.append("drafts status")
     return {"root": root, "daily_count": len(daily_files), "issues": issues, "checks": checks}

@@ -9,6 +9,9 @@
 - Rule-based inbox organization through `daily-review organize`.
 - Per-day review drafts in `data/drafts` with source-entry IDs and parser versioning.
 - 今日と明日のMain候補、および振り返り・原因・改善・日記・未分類のルールベース分類.
+- 整理ドラフトを確認する`daily-review review`、編集する`daily-review edit-draft`、承認する`daily-review approve`.
+- ドラフトの承認状態、revision、編集履歴、および承認済みドラフトから既存日次データへの互換的な保存.
+- 再承認前の日次JSONバックアップ.
 
 ### Safety
 

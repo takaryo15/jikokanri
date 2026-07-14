@@ -293,6 +293,47 @@ def atomic_write_json_data(path: Path, payload: dict[str, Any]) -> None:
             tmp_path.unlink()
 
 
+def atomic_write_json_data_many(writes: list[tuple[Path, dict[str, Any]]]) -> list[Path]:
+    """Atomically replace several generic JSON files, restoring on failure."""
+    prepared: list[tuple[Path, Path, bool, Path | None]] = []
+    replaced: list[tuple[Path, bool, Path | None]] = []
+    try:
+        for path, payload in writes:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False)
+            fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent), text=True)
+            tmp_path = Path(tmp_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(serialized)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            backup_path: Path | None = None
+            if path.exists():
+                backup_fd, backup_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".bak", dir=str(path.parent))
+                os.close(backup_fd)
+                backup_path = Path(backup_name)
+                shutil.copy2(path, backup_path)
+            prepared.append((path, tmp_path, path.exists(), backup_path))
+        for path, tmp_path, existed, backup_path in prepared:
+            os.replace(tmp_path, path)
+            replaced.append((path, existed, backup_path))
+    except Exception:
+        for path, existed, backup_path in reversed(replaced):
+            if existed and backup_path and backup_path.exists():
+                os.replace(backup_path, path)
+            elif not existed and path.exists():
+                path.unlink()
+        raise
+    finally:
+        for _, tmp_path, _, backup_path in prepared:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            if backup_path and backup_path.exists():
+                backup_path.unlink()
+    return [path for path, _ in writes]
+
+
 def atomic_write_json_many(writes: list[tuple[Path, dict[str, Any]]]) -> list[Path]:
     prepared: list[tuple[Path, Path, bool, Path | None]] = []
     replaced: list[tuple[Path, bool, Path | None]] = []
