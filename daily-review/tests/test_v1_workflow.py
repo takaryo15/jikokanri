@@ -23,7 +23,7 @@ def test_v1_first_use_night_approval_and_results_workflow(tmp_path):
     for command in ("home", "summary", "start"):
         result = runner.invoke(app, [command, "--date", "2026-07-14", "--root", str(tmp_path)])
         assert result.exit_code == 0
-        expected = "daily-review chat --date 2026-07-14" if command == "home" else "close-day"
+        expected = "daily-review handoff --date 2026-07-14 --copy" if command == "home" else "close-day"
         assert expected in result.output
 
     raw = tmp_path / "raw.txt"
@@ -81,8 +81,8 @@ def test_v1_summary_reports_invalid_json_without_traceback(tmp_path):
     assert "Traceback" not in result.output
 
 
-def test_v1_release_check_reports_error_without_mutating_uninitialized_root(tmp_path):
+def test_release_check_is_static_and_does_not_mutate_uninitialized_root(tmp_path):
     result = runner.invoke(app, ["release-check", "--root", str(tmp_path)])
-    assert result.exit_code == 1
-    assert "daily-review release-check: ERROR" in result.output
+    assert result.exit_code == 0
+    assert "daily-review release-check: OK" in result.output
     assert not list(tmp_path.iterdir())

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.1.0rc1
+
 ### Added
 
 - Natural-language raw-text storage through `daily-review input`.
@@ -19,6 +21,15 @@
 - `chat-schema-1.0`による検証、未知フィールドの警告、インポートハッシュによる重複検知、強制置換前のドラフトバックアップ.
 - ChatGPTとの日次往復をまとめる`daily-review chat`、`--prompt-only`、`--copy-prompt`、`--import-only`.
 - 動的なChatGPTプロンプト、`data/sessions`による補助セッション管理、`config/priorities.json`の優先順位設定.
+- 日付・session ID・prompt hash・有効期限付きの`daily-review handoff`と、安全に照合して受信する`daily-review receive`.
+- handoffの一覧・取消、期限・重複・別日回答の拒否、クリップボードとファイル出力の運用.
+- 自然文から承認までのv1.1日次ワークフロー、ChatGPT JSON取込、handoff・receive、および中断・再開。
+- v1.0環境に不足した保存先だけを追加する`daily-review migrate`と、実運用準備を確認する`daily-review v11-check`。
+
+### Changed
+
+- `home`をChatGPT中心の運用案内へ改善し、`doctor`と`release-check`をv1.1向けに整理。
+- 実行時の優先順位設定はGit管理しない`config/priorities.json`とし、`config/priorities.example.json`を配布。
 
 ### Safety
 
@@ -26,6 +37,8 @@
 - Unknown or ambiguous sentences are retained as unclassified text instead of being inferred.
 - ChatGPTの構造化入力は確認用ドラフトとして保存し、明示的な承認なしに日次記録を変更しません.
 - ChatGPTセッションは補助情報であり、日次データやドラフトより優先されません.
+- handoffの照合に失敗したChatGPT回答は、inbox・ドラフト・日次データを書き換えません.
+- ChatGPT入力の検証、承認済み日次の上書き拒否、原子的JSON書き込みと上書き前バックアップを維持。
 
 ## 1.0.0 - 2026-07-14
 

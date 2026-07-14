@@ -19,6 +19,9 @@ from .chat_import import backup_unapproved_draft, build_draft as build_chat_impo
 from .chat_schema import ChatSchemaError, extract_json as extract_chat_json, validate_payload as validate_chat_payload
 from .chat_workflow import build_dynamic_prompt, chat_home_next_command, load_priorities, workflow_state
 from .date_utils import month_range_for, parse_date, today_string, tomorrow_of, week_range_for
+from .handoff import (
+    HandoffError, cancel_handoff, current_handoff_state, is_expired, issue_handoff, list_handoffs, render_handoff, update_handoff,
+)
 from .markdown import render_daily, render_monthly, render_weekly
 from .models import Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
 from .storage import (
@@ -45,11 +48,14 @@ from .storage import (
 from .validation import ValidationResult, validate_daily, validate_plan
 from .weekly import build_weekly_summary
 from .reporting import build_report, weekly_trends
+from .receive import prepare_receive
 from .doctor import run_doctor
+from .migration import apply_migration, is_migrated, migration_plan
 from .dashboard import build_daily_summary, home_next_command, next_action_kind, next_command
 from .organizer import EDITABLE_DRAFT_FIELDS, load_draft, organize_day, organize_entries
 from .draft_workflow import approve_draft, build_daily_from_draft, replace_draft_fields
 from .session import prompt_hash, save_session
+from .v11_check import collect_v11_checks, repository_root
 
 
 app = typer.Typer(
@@ -92,11 +98,15 @@ def _metadata_version() -> str | None:
     if pkg_info.is_file():
         for line in pkg_info.read_text(encoding="utf-8").splitlines():
             if line.startswith("Version: "):
-                return line.removeprefix("Version: ")
+                value = line.removeprefix("Version: ")
+                # Editable source checkouts can retain stale egg-info until a
+                # build is performed.  The pyproject version is dynamic, so
+                # the package source is authoritative in that situation.
+                return __version__ if value != __version__ else value
     try:
         return package_version("daily-review")
     except PackageNotFoundError:
-        return None
+        return __version__
 
 
 def _day(value: str | None) -> str:
@@ -594,6 +604,95 @@ def init(root: Path | None = RootOption) -> None:
     typer.echo("既存だったもの")
     for path in existing or ["なし"]:
         typer.echo(f"- {path}")
+
+
+@app.command()
+def migrate(
+    root: Path | None = RootOption,
+    dry_run: bool = typer.Option(False, "--dry-run", help="変更予定だけを表示します。"),
+    json_output: bool = typer.Option(False, "--json", help="結果をJSONで表示します。"),
+    yes: bool = typer.Option(False, "--yes", help="確認なしで移行を実行します。"),
+) -> None:
+    """v1.0の保存先に不足しているv1.1用ファイルだけを追加します。"""
+    base = _root(root)
+    try:
+        already_migrated = is_migrated(base)
+        plan = migration_plan(base)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"ERROR: 移行状態を読み込めません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+
+    if dry_run:
+        payload = {"root": str(base), "dry_run": True, "already_migrated": already_migrated, "plan": plan}
+        if json_output:
+            typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+            return
+        typer.echo("daily-review migrate｜v1.0 → v1.1｜dry-run")
+        typer.echo("確認結果:")
+        for item in plan:
+            label = "作成予定" if item["action"] == "create" else "既存"
+            typer.echo(f"- {item['path']}: {label}")
+        typer.echo("- 日次データ: 変更なし")
+        typer.echo("- 週次データ: 変更なし")
+        typer.echo("- 月次データ: 変更なし")
+        typer.echo("保存は行いませんでした")
+        return
+
+    if already_migrated:
+        payload = {"root": str(base), "already_migrated": True, "changes": []}
+        if json_output:
+            typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            typer.echo("この環境はすでにv1.1対応済みです")
+            typer.echo("変更はありません")
+        return
+    if not yes and not typer.confirm("移行を実行しますか？", default=False):
+        typer.echo("移行を中止しました")
+        raise typer.Exit(code=2)
+    try:
+        result = apply_migration(base)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"ERROR: 移行に失敗しました: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    payload = {"root": str(base), **result, "existing_data_changed": 0}
+    if json_output:
+        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    typer.echo("v1.1への移行が完了しました")
+    typer.echo(f"変更: {len(result['changes'])}件")
+    typer.echo(f"スキップ: {len(result['skipped'])}件")
+    typer.echo("既存データ変更: 0件")
+    typer.echo("次の操作:")
+    typer.echo("daily-review v11-check")
+
+
+@app.command("v11-check")
+def v11_check(
+    root: Path | None = RootOption,
+    verbose: bool = typer.Option(False, "--verbose", help="doctorの警告も表示します。"),
+    json_output: bool = typer.Option(False, "--json", help="結果をJSONで表示します。"),
+) -> None:
+    """v1.1の実運用準備を読み取り専用で確認します。"""
+    report = collect_v11_checks(_root(root))
+    if json_output:
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(f"保存先ルート: {report['root']}")
+        for item in report["checks"]:
+            if item["level"] == "OK" or verbose or item["level"] == "ERROR":
+                prefix = item["level"]
+                detail = "" if item["level"] == "OK" else f": {item['message']}"
+                typer.echo(f"{prefix:<5}{item['name']}{detail}")
+        if verbose:
+            for warning in report["doctor_warnings"]:
+                typer.echo(f"WARNING {warning['message']}")
+        if report["errors"]:
+            typer.echo("daily-review v11-check: ERROR")
+        else:
+            typer.echo("daily-review v11-check: OK")
+            typer.echo("v1.1.0rc1 is ready for operational testing")
+    if report["errors"]:
+        raise typer.Exit(code=5)
 
 
 @app.command("input")
@@ -1182,6 +1281,209 @@ def chat(
     _chat_import_and_optionally_review(
         base=base, day=day, dry_run=False, yes=False, force=force_import, review_after=True, **values,
     )
+
+
+def _handoff_error(message: str, *, day: str | None = None, code: int = 2) -> None:
+    typer.echo(f"ERROR: {message}", err=True)
+    if day:
+        typer.echo("次の操作:", err=True)
+        typer.echo(f"daily-review handoff --date {day}", err=True)
+    raise typer.Exit(code=code)
+
+
+@app.command("handoff")
+def handoff(
+    date: str | None = DateOption,
+    copy: bool = typer.Option(False, "--copy", help="完成したhandoffをmacOSのクリップボードへコピーする"),
+    output: Path | None = typer.Option(None, "--output", help="handoffを書き出す新規テキストファイル"),
+    root: Path | None = RootOption,
+) -> None:
+    """ChatGPTへ渡す、日付・ハッシュ付きの安全なhandoffを発行します。"""
+    base = _root(root)
+    day = _day(date)
+    if daily_path(base, day).exists():
+        _handoff_error("この日の日次データはすでに存在します", day=day)
+    try:
+        summary = build_daily_summary(base, day)
+        prompt = _chat_prompt_for_day(base, day, summary, create_priorities=True)
+        item = issue_handoff(base, day, prompt, prompt_hash(prompt))
+    except (OSError, ValueError, HandoffError) as exc:
+        _handoff_error(f"handoffを生成できません: {exc}", day=day, code=3)
+        return
+    package = render_handoff(day, prompt, item)
+    if output:
+        if output.exists():
+            _handoff_error(f"出力先がすでに存在します: {output}", day=day)
+        try:
+            write_text(output.expanduser(), package)
+        except OSError as exc:
+            _handoff_error(f"出力ファイルを保存できません: {exc}", day=day, code=4)
+    typer.echo(package, nl=False)
+    _save_chat_session(
+        base,
+        day,
+        "waiting_for_chatgpt",
+        prompt_generated_at=now_iso(),
+        prompt_hash=item["prompt_hash"],
+        handoff_session_id=item["session_id"],
+        imported_at=None,
+        draft_path=None,
+        completed_at=None,
+    )
+    if copy:
+        if _copy_chat_prompt(package):
+            typer.echo("ChatGPT用handoffをクリップボードへコピーしました")
+            typer.echo(f"対象日: {day}")
+            typer.echo(f"session_id: {item['session_id']}")
+            typer.echo("ChatGPTへ貼り付けてください。")
+        else:
+            typer.echo("WARN: コピーできなかったため、上のhandoffを手動でコピーしてください")
+    if output:
+        typer.echo(f"出力先: {output.expanduser()}")
+
+
+@app.command("handoff-list")
+def handoff_list(
+    date: str | None = DateOption,
+    latest: bool = typer.Option(False, "--latest", help="最新の有効handoffだけを表示する"),
+    json_output: bool = typer.Option(False, "--json", help="一覧をJSONだけで出力する"),
+    root: Path | None = RootOption,
+) -> None:
+    """指定日のhandoff発行履歴を表示します。"""
+    base = _root(root)
+    day = _day(date)
+    try:
+        items = list_handoffs(base, day, latest=latest)
+    except (OSError, HandoffError, ValueError) as exc:
+        _handoff_error(f"handoff一覧を読み込めません: {exc}", day=day, code=3)
+        return
+    if json_output:
+        typer.echo(json.dumps({"date": day, "handoffs": items}, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"handoff一覧｜{day}")
+    if not items:
+        typer.echo("なし")
+        return
+    for index, item in enumerate(items, start=1):
+        typer.echo(f"{index}. {item.get('session_id', '不明')}")
+        typer.echo(f"   状態: {item.get('status', '不明')}")
+        typer.echo(f"   作成: {item.get('created_at', '不明')}")
+        typer.echo(f"   期限: {item.get('expires_at', '不明')}")
+
+
+@app.command("handoff-cancel")
+def handoff_cancel(
+    date: str | None = DateOption,
+    session_id: str | None = typer.Option(None, "--session-id", help="キャンセルするhandoffのsession_id"),
+    latest: bool = typer.Option(False, "--latest", help="最新の未承認handoffをキャンセルする"),
+    root: Path | None = RootOption,
+) -> None:
+    """未承認handoffをキャンセルし、以後の受信を拒否します。"""
+    base = _root(root)
+    day = _day(date)
+    if session_id and latest:
+        _handoff_error("--session-id と --latest は同時に使用できません", day=day)
+    try:
+        item = cancel_handoff(base, day, session_id=session_id, latest=latest)
+    except (OSError, HandoffError, ValueError) as exc:
+        _handoff_error(str(exc), day=day, code=3)
+        return
+    typer.echo("handoffをキャンセルしました")
+    typer.echo(f"session_id: {item['session_id']}")
+
+
+@app.command("receive")
+def receive(
+    date: str | None = DateOption,
+    clipboard: bool = typer.Option(False, "--clipboard", help="macOSのクリップボードからChatGPT回答を読み込む"),
+    file: Path | None = typer.Option(None, "--file", help="ChatGPT回答のUTF-8ファイル"),
+    json_text: str | None = typer.Option(None, "--json-text", help="ChatGPT回答のJSONまたはJSONを含む文章"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="検証・表示だけを行い保存しない"),
+    approve: bool = typer.Option(False, "--approve", help="受信後に既存の確認・承認フローを開始する"),
+    yes: bool = typer.Option(False, "--yes", help="安全条件を満たす場合のみ確認なしで承認する"),
+    force: bool = typer.Option(False, "--force", help="未承認ドラフトまたは受信済みhandoffを安全に再処理する"),
+    allow_expired: bool = typer.Option(False, "--allow-expired", help="期限切れhandoffの受信を明示的に許可する"),
+    root: Path | None = RootOption,
+) -> None:
+    """handoffに結び付いたChatGPT回答を検証して安全に取り込みます。"""
+    if approve and yes:
+        _handoff_error("--approve と --yes は同時に使用できません")
+    base = _root(root)
+    requested_day = _day(date) if date is not None else None
+    try:
+        content, _ = _read_chat_import_input(json_text=json_text, file=file, clipboard=clipboard)
+        payload, _warnings, manifest, item, handoff_info, content_hash = prepare_receive(
+            base,
+            content,
+            requested_day=requested_day,
+            allow_expired=allow_expired,
+            force=force,
+        )
+    except (ChatSchemaError, HandoffError, ValueError) as exc:
+        day_hint = requested_day
+        _handoff_error(str(exc), day=day_hint, code=3)
+        return
+    except OSError as exc:
+        _handoff_error(f"回答を読み込めません: {exc}", day=requested_day, code=4)
+        return
+    day = payload["date"]
+    if yes and (item.get("status") != "issued" or is_expired(item)):
+        _handoff_error("自動承認できません。handoffが発行済みかつ有効期限内である必要があります", day=day)
+    if daily_path(base, day).exists():
+        _handoff_error("同日の日次データがすでに存在します", day=day)
+    if dry_run:
+        try:
+            chat_import(
+                date=day, clipboard=False, file=None, json_text=content, dry_run=True,
+                approve=False, yes=False, output_json=False, force=force, root=base,
+            )
+        except typer.Exit:
+            raise
+        typer.echo(f"handoff session_id: {handoff_info['session_id']}")
+        return
+    try:
+        chat_import(
+            date=day, clipboard=False, file=None, json_text=content, dry_run=False,
+            approve=False, yes=yes, output_json=False, force=force, root=base,
+        )
+    except typer.Exit as exc:
+        if exc.exit_code:
+            typer.echo("次の操作:", err=True)
+            typer.echo(f"daily-review receive --date {day} --clipboard", err=True)
+        raise
+    try:
+        draft = load_draft(base, day)
+        approved = bool(draft and draft.get("status") == "approved")
+        update_handoff(base, day, manifest, item, status="approved" if approved else "received", content_hash=content_hash)
+    except (OSError, ValueError, HandoffError) as exc:
+        _handoff_error(f"handoff状態を更新できません: {exc}", day=day, code=4)
+        return
+    _save_chat_session(
+        base,
+        day,
+        "approved" if approved else "draft",
+        handoff_session_id=handoff_info["session_id"],
+        imported_at=now_iso(),
+        draft_path=str(draft_path(base, day).relative_to(base)),
+        completed_at=now_iso() if approved else None,
+    )
+    typer.echo("ChatGPTの回答を受信しました")
+    typer.echo(f"対象日: {day}")
+    typer.echo(f"session_id: {handoff_info['session_id']}")
+    if approved:
+        _print_chat_completed(base, day)
+        return
+    typer.echo("状態: 未承認")
+    typer.echo("次の操作:")
+    typer.echo(f"daily-review chat --date {day} --resume")
+    if approve:
+        _chat_resume(base, day)
+        try:
+            refreshed = load_draft(base, day)
+        except (OSError, ValueError):
+            refreshed = None
+        if refreshed and refreshed.get("status") == "approved":
+            update_handoff(base, day, manifest, item, status="approved", content_hash=content_hash)
 
 
 def _print_organize_result(result: dict[str, Any], base: Path, day: str, *, dry_run: bool) -> None:
@@ -2194,7 +2496,24 @@ def home(
     base = _root(root)
     report = build_daily_summary(base, _day(date))
     chat_next = chat_home_next_command(base, report)
-    _print_summary(report, title="daily-review home", next_override=chat_next or home_next_command(report))
+    handoff_state = "none"
+    handoff_eligible = not report.get("draft") and not report.get("entry") and not report.get("inbox_entry_count")
+    if handoff_eligible:
+        try:
+            handoff_state = current_handoff_state(base, report["date"])
+        except (OSError, ValueError, HandoffError):
+            handoff_state = "none"
+    if "--import-only --clipboard" in chat_next and handoff_state == "none":
+        handoff_next = chat_next
+    elif handoff_state == "issued":
+        handoff_next = f"daily-review receive --date {report['date']} --clipboard"
+    else:
+        handoff_next = f"daily-review handoff --date {report['date']} --copy" if handoff_state in {"none", "expired"} else ""
+    _print_summary(report, title="daily-review home", next_override=handoff_next if handoff_eligible else chat_next or home_next_command(report))
+    if handoff_state == "issued":
+        typer.echo("状態: ChatGPTの回答待ち")
+    elif handoff_state == "expired":
+        typer.echo("状態: handoff期限切れ")
     if "--import-only --clipboard" in chat_next:
         typer.echo("状態: ChatGPTからのJSON待ち")
     typer.echo("未完了タスク:")
@@ -2419,22 +2738,24 @@ def doctor(root: Path | None = RootOption) -> None:
         typer.echo("daily-review doctor: ERROR")
         typer.echo(f"WARN {len(warnings)}件 / ERROR {len(errors)}件")
     else:
-        typer.echo("daily-review doctor: OK")
         if warnings:
+            typer.echo("daily-review doctor: WARNING")
             typer.echo(f"WARN {len(warnings)}件 / ERROR 0件")
+        else:
+            typer.echo("daily-review doctor: OK")
     if errors:
         raise typer.Exit(code=1)
 
 
 @app.command("release-check")
 def release_check(root: Path | None = RootOption) -> None:
-    """v1.0.0 リリースに必要なローカル状態を読み取り専用で確認します。"""
-    base = _root(root)
-    report = run_doctor(base)
-    errors = [item["message"] for item in report["issues"] if item["level"] == "ERROR"]
+    """v1.1.0rc1 リリースに必要な静的条件を読み取り専用で確認します。"""
+    del root  # A release check validates the package, not user-owned runtime data.
+    source_root = repository_root()
+    errors: list[str] = []
     installed_version = _metadata_version()
-    if __version__ != "1.0.0":
-        errors.append(f"アプリのバージョンが1.0.0ではありません: {__version__}")
+    if __version__ != "1.1.0rc1":
+        errors.append(f"アプリのバージョンが1.1.0rc1ではありません: {__version__}")
     if installed_version != __version__:
         errors.append("package metadataのバージョンを取得できないか一致しません")
     command_names = {
@@ -2443,16 +2764,38 @@ def release_check(root: Path | None = RootOption) -> None:
     }
     required_commands = {
         "home", "summary", "start", "next", "doctor", "weekly", "monthly", "backup", "restore",
-        "chat", "chat-prompt", "chat-import",
+        "chat", "chat-prompt", "chat-import", "handoff", "receive", "handoff-list", "handoff-cancel",
+        "input", "organize", "review", "edit-draft", "approve", "reflect", "migrate", "v11-check",
     }
     missing_commands = sorted(required_commands - command_names)
     if missing_commands:
         errors.append("主要コマンドが登録されていません: " + ", ".join(missing_commands))
-    required_checks = {"chat import schema", "chat import prompt", "priorities config"}
-    missing_checks = sorted(required_checks - set(report["checks"]))
-    if missing_checks:
-        errors.append("ChatGPTワークフローの必須確認が不足しています: " + ", ".join(missing_checks))
-    typer.echo(f"保存先ルート: {report['root']}")
+    from .chat_schema import SCHEMA_VERSION
+    from .handoff import HANDOFF_VERSION
+    from .migration import MIGRATION_ID
+    from .storage import REQUIRED_TEMPLATE_NAMES
+
+    for name in REQUIRED_TEMPLATE_NAMES + (CHAT_IMPORT_PROMPT_NAME,):
+        if not (source_root / "templates" / name).is_file():
+            errors.append(f"必要なテンプレートがありません: templates/{name}")
+    if SCHEMA_VERSION != "1.0":
+        errors.append("chat import schemaのバージョンが不正です")
+    if HANDOFF_VERSION != "1.0":
+        errors.append("handoff schemaのバージョンが不正です")
+    if MIGRATION_ID != "v1.1-base":
+        errors.append("v1.1 migration定義が不正です")
+    if not (source_root / "config" / "priorities.example.json").is_file():
+        errors.append("config/priorities.example.json がありません")
+    for name in ("README.md", "CHANGELOG.md", "RELEASE_CHECKLIST.md", "tests/test_v11_e2e.py"):
+        if not (source_root / name).is_file():
+            errors.append(f"リリース必須ファイルがありません: {name}")
+    try:
+        ignored = (source_root / ".gitignore").read_text(encoding="utf-8")
+        if not all(value in ignored for value in ("data/", "logs/", "config/priorities.json")):
+            errors.append("実行時データまたは設定のGit除外が不足しています")
+    except OSError:
+        errors.append(".gitignoreを読み込めません")
+    typer.echo(f"パッケージルート: {source_root}")
     typer.echo(f"version: {__version__}")
     if errors:
         for error in errors:
@@ -2464,7 +2807,13 @@ def release_check(root: Path | None = RootOption) -> None:
     typer.echo("OK   chat prompt template")
     typer.echo("OK   chat import schema")
     typer.echo("OK   priorities config")
-    typer.echo("v1.0.0 is ready")
+    typer.echo("OK   handoff workflow")
+    typer.echo("OK   receive validation")
+    typer.echo("OK   duplicate protection")
+    typer.echo("OK   clipboard workflow")
+    typer.echo("OK   migration definition")
+    typer.echo("OK   runtime data ignored by git")
+    typer.echo("v1.1.0rc1 is ready")
 
 
 @app.command()

@@ -17,6 +17,10 @@ DATA_DIRS = [
     Path("data/inbox"),
     Path("data/drafts"),
     Path("data/sessions"),
+    Path("data/handoffs"),
+    Path("data/backups"),
+    Path("data/backups/daily"),
+    Path("data/backups/drafts"),
     Path("logs"),
     Path("templates"),
 ]
@@ -24,6 +28,8 @@ DATA_DIRS = [
 DEFAULT_PRIORITIES = {
     "priorities": ["院試", "研究", "筋トレ", "競馬AI", "定期収入", "松尾研", "読書"],
 }
+
+PRIORITIES_EXAMPLE_NAME = "priorities.example.json"
 
 
 TEMPLATE_CONTENTS = {
@@ -194,6 +200,10 @@ def resolve_root(root: Path | None = None) -> Path:
     if root is not None:
         return root.expanduser().resolve()
 
+    environment_root = os.environ.get("DAILY_REVIEW_ROOT")
+    if environment_root:
+        return Path(environment_root).expanduser().resolve()
+
     current = Path.cwd().resolve()
 
     def is_project_root(path: Path) -> bool:
@@ -275,8 +285,16 @@ def session_path(root: Path, day: str) -> Path:
     return root / "data" / "sessions" / f"{day}.json"
 
 
+def handoff_path(root: Path, day: str) -> Path:
+    return root / "data" / "handoffs" / f"{day}.json"
+
+
 def priorities_path(root: Path) -> Path:
     return root / "config" / "priorities.json"
+
+
+def priorities_example_path(root: Path) -> Path:
+    return root / "config" / PRIORITIES_EXAMPLE_NAME
 
 
 def read_json_file(path: Path) -> dict[str, Any]:

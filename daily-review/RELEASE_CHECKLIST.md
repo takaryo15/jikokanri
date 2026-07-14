@@ -1,28 +1,28 @@
-# v1.0.0 Release Checklist
+# v1.1.0rc1 Release Checklist
 
 ## Release checks
 
-- [x] Full `pytest` suite passes (141 tests).
-- [x] `daily-review --help` and `daily-review --version` work.
-- [x] `daily-review home`, `summary`, `start`, `doctor`, and `release-check` work.
-- [x] Initial-use, night-review, approval, result-recording, carryover, weekly/monthly, and backup/restore workflows are covered by tests.
-- [x] Root auto-detection works from the repository root and project directory.
-- [x] Invalid dates and broken JSON are covered without normal traceback output.
-- [x] `git diff --check` passes.
-- [x] `data/`, `logs/`, `backups/`, and ZIP archives are ignored by Git; previously tracked generated reports are staged for untracking without deleting local files.
-- [x] README and CHANGELOG have been updated for v1.0.0.
-- [x] Editable install verification passed in a temporary virtual environment.
+- [ ] Full `pytest` suite passes.
+- [ ] `daily-review migrate --yes` succeeds on a v1.0-style workspace.
+- [ ] `daily-review v11-check` succeeds.
+- [ ] `daily-review doctor` succeeds.
+- [ ] `daily-review release-check` succeeds.
+- [ ] `scripts/smoke_v11.py` succeeds in a temporary root.
+- [ ] Natural-input, handoff, and interrupted-resume E2E flows succeed.
+- [ ] Duplicate receive and approved-daily overwrite are rejected.
+- [ ] Runtime data and `config/priorities.json` are not tracked by Git.
+- [ ] README and CHANGELOG are updated.
+- [ ] Version is `1.1.0rc1`.
 - [ ] Confirm the final staged/unstaged `git status` before commit.
-- [ ] Create the `v1.0.0` Git tag after approval.
-- [ ] Create the GitHub Release after approval.
+- [ ] Create and push the annotated `v1.1.0rc1` tag after verification.
 
 ## GitHub Release draft
 
-### daily-review v1.0.0
+### daily-review v1.1.0rc1
 
-- Local daily review, approved tomorrow plans, and task-result recording.
-- Tuesday-to-Monday weekly and calendar-monthly reports.
-- Safe ZIP backup, validated restore with dry-run, and read-only doctor checks.
-- No external API, automatic approval, automatic carryover, or automatic plan changes.
+- Natural language input, review drafts, and explicit approval.
+- Safe ChatGPT handoff/receive packages with session and prompt-hash checks.
+- v1.0-to-v1.1 migration, operational checks, and safe backup/restore.
+- No external AI API, automatic approval, or automatic plan changes.
 
 This checklist prepares the release only. It does not create a Git tag or publish a GitHub Release.

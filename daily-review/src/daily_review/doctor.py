@@ -7,6 +7,7 @@ from typing import Any
 from . import __version__
 from .chat_schema import SCHEMA_VERSION
 from .date_utils import week_range_for
+from .handoff import HANDOFF_STATUSES, HANDOFF_VERSION, HandoffError, is_expired
 from .session import SESSION_STATUSES
 from .storage import (
     CHAT_IMPORT_PROMPT_NAME,
@@ -61,6 +62,8 @@ def run_doctor(root: Path) -> dict[str, Any]:
                 issues.append(_issue("WARN", "data/drafts がありません。daily-review organize 実行時に自動作成されます"))
             elif relative == Path("data/sessions"):
                 issues.append(_issue("WARN", "data/sessions がありません。daily-review chat 実行時に自動作成されます"))
+            elif relative == Path("data/handoffs"):
+                issues.append(_issue("WARN", "data/handoffs がありません。daily-review handoff 実行時に自動作成されます"))
             else:
                 issues.append(_issue("ERROR", f"必要なディレクトリがありません: {relative}"))
         elif not os.access(path, os.W_OK):
@@ -187,6 +190,72 @@ def run_doctor(root: Path) -> dict[str, Any]:
     if sessions_ok:
         checks.append("chat sessions")
 
+    handoffs_dir = root / "data" / "handoffs"
+    handoffs_ok = handoffs_dir.is_dir()
+    handoff_consistent = handoffs_ok
+    if handoffs_dir.is_dir():
+        seen_ids: set[str] = set()
+        seen_hashes: set[str] = set()
+        for path in sorted(handoffs_dir.glob("*.json")):
+            try:
+                value = read_json_file(path)
+                if not isinstance(value, dict) or not isinstance(value.get("date"), str) or not isinstance(value.get("handoffs"), list):
+                    raise ValueError("dateまたはhandoffsが不正です")
+            except (OSError, ValueError) as exc:
+                issues.append(_issue("ERROR", f"handoff JSONを読み込めません: {path.name} ({exc})"))
+                handoffs_ok = handoff_consistent = False
+                continue
+            for item in value["handoffs"]:
+                if not isinstance(item, dict):
+                    issues.append(_issue("ERROR", f"{path.name}: handoff項目が不正です")); handoffs_ok = False; continue
+                session_id = item.get("session_id")
+                status = item.get("status")
+                if not isinstance(session_id, str) or not session_id or session_id in seen_ids:
+                    issues.append(_issue("ERROR", f"{path.name}: session_idが不正または重複しています")); handoffs_ok = False
+                else:
+                    seen_ids.add(session_id)
+                if status not in HANDOFF_STATUSES:
+                    issues.append(_issue("ERROR", f"{path.name}: handoff statusが不正です")); handoffs_ok = False
+                if not isinstance(item.get("prompt_hash"), str) or not item["prompt_hash"].startswith("sha256:"):
+                    issues.append(_issue("ERROR", f"{path.name}: prompt_hashがありません")); handoffs_ok = False
+                content_hash = item.get("import_hash")
+                if isinstance(content_hash, str):
+                    if content_hash in seen_hashes:
+                        issues.append(_issue("ERROR", f"{path.name}: import_hashが重複しています")); handoffs_ok = False
+                    seen_hashes.add(content_hash)
+                if status == "approved" and not (root / "data" / "daily" / f"{value['date']}.json").is_file():
+                    issues.append(_issue("ERROR", f"{path.name}: approvedなのに日次データがありません")); handoffs_ok = False
+                if status == "received" and not (root / "data" / "drafts" / f"{value['date']}.json").is_file():
+                    issues.append(_issue("WARN", f"{path.name}: receivedなのにドラフトがありません")); handoff_consistent = False
+                if status == "issued":
+                    try:
+                        if is_expired(item):
+                            issues.append(_issue("WARN", f"{path.name}: issued handoffが期限切れです")); handoff_consistent = False
+                    except HandoffError as exc:
+                        issues.append(_issue("ERROR", f"{path.name}: {exc}")); handoffs_ok = False
+                session_file = root / "data" / "sessions" / f"{value['date']}.json"
+                if session_file.is_file():
+                    try:
+                        session_value = read_json_file(session_file)
+                        expected_status = {"issued": "waiting_for_chatgpt", "received": "draft", "approved": "approved"}.get(status)
+                        if (
+                            isinstance(session_value, dict)
+                            and session_value.get("handoff_session_id") == session_id
+                            and expected_status
+                            and session_value.get("status") != expected_status
+                        ):
+                            issues.append(_issue("WARN", f"{path.name}: handoffとsessionのstatusが不整合です")); handoff_consistent = False
+                    except (OSError, ValueError):
+                        issues.append(_issue("WARN", f"{path.name}: 対応するchat sessionを読み込めません")); handoff_consistent = False
+    if handoffs_ok:
+        checks.append("handoffs")
+    if HANDOFF_VERSION == "1.0":
+        checks.append("handoff schema")
+    else:
+        issues.append(_issue("ERROR", f"handoff schemaのバージョンが不正です: {HANDOFF_VERSION}"))
+    if handoff_consistent:
+        checks.append("handoff-session consistency")
+
     priority_file = priorities_path(root)
     if not priority_file.is_file():
         issues.append(_issue("WARN", "優先順位設定がありません: config/priorities.json（daily-review init で作成できます）"))
@@ -202,4 +271,14 @@ def run_doctor(root: Path) -> dict[str, Any]:
             issues.append(_issue("ERROR", f"優先順位設定が不正です: {exc}"))
         else:
             checks.append("priorities config")
+
+    try:
+        source_root = Path(__file__).resolve().parents[2]
+        gitignore = (source_root / ".gitignore").read_text(encoding="utf-8")
+        if all(value in gitignore for value in ("data/", "logs/", "config/priorities.json")):
+            checks.append("runtime data ignored by git")
+        else:
+            issues.append(_issue("WARN", "実行時データまたは優先順位設定のGit除外を確認できません"))
+    except OSError:
+        issues.append(_issue("WARN", ".gitignoreを読み込めません"))
     return {"root": root, "daily_count": len(daily_files), "issues": issues, "checks": checks}

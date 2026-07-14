@@ -6,6 +6,7 @@ build/
 data/
 logs/
 backups/
+config/priorities.json
 *.zip
 .venv-release-test/
 .DS_Store

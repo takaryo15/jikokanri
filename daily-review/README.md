@@ -1,6 +1,6 @@
 # daily-review
 
-`daily-review` は、毎日の振り返り、翌日の指示書、実行結果をローカルのJSONとMarkdownに残すPython CLIです。v1.0.0では、週次・月次振り返りと、ローカルバックアップ・安全な復元・状態点検までを扱います。
+`daily-review` は、毎日の振り返り、翌日の指示書、実行結果をローカルのJSONとMarkdownに残すPython CLIです。v1.1.0rc1では、自然文入力からChatGPTとの安全な受け渡し、明示的な承認までをローカルで扱います。
 
 ## v1でできること
 
@@ -13,18 +13,28 @@
 
 ## v1.1 開発中: 自然文入力
 
-### 毎晩の推奨操作: ChatGPT往復フロー
-
-毎晩は `daily-review chat` を入口として使います。外部APIには接続せず、表示されたプロンプトとChatGPTのJSONをコピー＆ペーストまたはクリップボードで往復します。原文、確認用ドラフト、確定データは分離して保存され、承認するまで日次データは確定されません。中断してもドラフトから再開できます。
+## v1.1 RCの毎晩の基本操作
 
 ```bash
-daily-review chat
-daily-review chat --resume
-daily-review chat --import-only --clipboard
-daily-review chat --prompt-only --copy-prompt
+daily-review handoff --copy
+daily-review receive --clipboard --approve
+daily-review home
 ```
 
-`chat` は既存の `chat-prompt`、`chat-import`、`reflect --resume` をまとめる上位コマンドです。`input`、`organize`、`review`、`edit-draft`、`approve` はトラブル対応や高度な個別操作として引き続き利用できます。
+途中で止まった場合は `daily-review chat --resume`、初回またはv1.0から更新した後は `daily-review migrate` と `daily-review v11-check`、トラブル時は `daily-review doctor` を実行します。`migrate` は不足しているv1.1用の保存先だけを作成し、日次・週次・月次の既存データを変更しません。
+
+### 毎晩の推奨操作: ChatGPT往復フロー
+
+毎晩は、handoffを作成してChatGPTへ貼り付け、回答をreceiveする流れを使います。外部APIには接続せず、コピー＆ペーストまたはクリップボードだけで往復します。handoffには対象日・一意なセッションID・プロンプトハッシュ・期限が含まれるため、古い回答や別日の回答を保存前に拒否できます。
+
+```bash
+daily-review handoff --copy
+daily-review receive --clipboard --approve
+daily-review chat --resume
+daily-review home
+```
+
+回答を受信しても、承認するまで日次データは確定されません。保留したドラフトは `daily-review chat --resume` で再開できます。`chat`、`chat-prompt`、`chat-import`、`input`、`organize`、`review`、`edit-draft`、`approve` はトラブル対応や高度な個別操作として引き続き利用できます。
 
 `input` は、ChatGPT上で書いた自然文の原文を日別inboxへ安全に追記保存するv1.1開発中の入口です。入力原文は日次レビュー、Main、タスク結果、明日の計画へ自動反映しません。
 
@@ -126,6 +136,22 @@ daily-review chat --import-only --json-text '{"schema_version":"1.0", "date":"20
 
 動的プロンプトには対象日、`config/priorities.json` の優先順位、前日の提案・確定計画、今日の未完了タスク、今週の最低ラインを、存在するものだけ含めます。セッションは `data/sessions/YYYY-MM-DD.json` に補助情報として保存します。日次データとドラフトが常に正であり、セッションの破損や欠損だけで日次データを変更することはありません。
 
+### handoff / receive による安全な受け渡し
+
+`handoff` はChatGPTへ貼り付ける完成済みパッケージを発行し、`receive` は回答に含まれるhandoff情報を照合してから既存の安全なインポート処理へ渡します。期限は対象日の翌日05:00（Asia/Tokyo）です。
+
+```bash
+daily-review handoff --date 2026-07-14 --copy
+daily-review handoff --date 2026-07-14 --output /tmp/daily-review-handoff.txt
+daily-review receive --clipboard --dry-run
+daily-review receive --file response.json --approve
+daily-review receive --clipboard --yes
+daily-review handoff-list --date 2026-07-14
+daily-review handoff-cancel --date 2026-07-14 --latest
+```
+
+`receive` はsession ID、対象日、prompt hash、有効期限、受信履歴、日次データの有無を検証します。期限切れを意図的に確認するときだけ `--allow-expired` を使えます。未承認ドラフトの置換だけは `--force` で可能ですが、確定済み日次・別日・異なるsession ID・異なるprompt hashは常に拒否されます。
+
 ## 設計思想
 
 - 生ログは加工せず保存します。
@@ -143,9 +169,11 @@ cd daily-review
 python3 -m pip install -e ".[test]"
 daily-review --version
 daily-review init
+daily-review migrate
+daily-review v11-check
 ```
 
-保存先は自動検出されます。`daily-review/` 内でも、その親のリポジトリルートからでも実行できます。別の保存先を使うときは、各コマンドに `--root /path/to/root` を付けます。明示した `--root` が常に優先されます。`init` は既存のデータとテンプレートを上書きしません。
+保存先は自動検出されます。`daily-review/` 内でも、その親のリポジトリルートからでも実行できます。別の保存先を使うときは、各コマンドに `--root /path/to/root` を付けるか、`DAILY_REVIEW_ROOT` を設定します。明示した `--root` が常に優先されます。`init` と `migrate` は既存のデータとテンプレートを上書きしません。
 
 ## 毎日の運用
 
@@ -199,6 +227,10 @@ daily-review approve-plan
 | `approve` | 確認済みドラフトを日次記録と翌日提案へ保存 |
 | `reflect` | 入力から整理・確認・承認までをまとめて進める入口 |
 | `chat` | ChatGPT用プロンプト、JSON取り込み、確認・承認をまとめる推奨入口 |
+| `handoff` | 対象日・session ID・期限付きのChatGPT受け渡しパッケージを発行 |
+| `receive` | handoff照合後にChatGPT回答を安全に取り込む |
+| `handoff-list` | handoffの発行・受信・取消状態を確認 |
+| `handoff-cancel` | 未承認handoffを取消して以後の受信を拒否 |
 | `chat-prompt` | ChatGPTへ渡す構造化JSON用プロンプトを表示・コピー |
 | `chat-import` | ChatGPTの構造化JSONを検証して確認用ドラフトへ取り込む |
 
@@ -280,14 +312,15 @@ daily-review restore path/to/backup.zip --force
 daily-review doctor
 ```
 
-`doctor` は採用した保存先ルート、書き込み可能性、火曜始まりの週、パッケージバージョンも表示します。`WARN` は不足したMarkdownなど、`ERROR` は読めないJSONや不正な計画を示します。古いJSONに新規フィールドがないことだけではエラーにしません。正常時は最後に `daily-review doctor: OK` を表示します。
+`doctor` は採用した保存先ルート、書き込み可能性、火曜始まりの週、パッケージバージョンも表示します。`WARN` は不足したMarkdownなど、`ERROR` は読めないJSONや不正な計画を示します。古いJSONに新規フィールドがないことだけではエラーにしません。最後は問題なしで `daily-review doctor: OK`、警告ありで `daily-review doctor: WARNING`、重大な問題で `daily-review doctor: ERROR` を表示します。
 
 ## release-check
 
-`release-check` はv1.0.0のバージョン、package metadata、主要コマンド、保存先、doctorの重大エラーを読み取り専用で確認します。
+`release-check` はv1.1.0rc1のバージョン、package metadata、主要コマンド、テンプレート、スキーマ、ドキュメント、Git除外、migration定義を読み取り専用で確認します。実ユーザーデータが0件でも成功します。
 
 ```bash
 daily-review release-check
+daily-review v11-check
 ```
 
 ## 保存構造とJSON
@@ -299,7 +332,9 @@ data/monthly/YYYY-MM.json
 data/inbox/YYYY-MM-DD.json
 data/drafts/YYYY-MM-DD.json
 data/sessions/YYYY-MM-DD.json
+data/handoffs/YYYY-MM-DD.json
 data/backups/daily/YYYY-MM-DD_TIMESTAMP.json
+data/backups/drafts/YYYY-MM-DD_TIMESTAMP.json
 logs/YYYY-MM-DD.md
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
 logs/monthly_YYYY-MM.md
@@ -310,11 +345,18 @@ backups/
 
 日次JSONには生ログ、整形済み振り返り、提案版、確定版、タスク結果を必要に応じて保存します。新しい任意フィールドがなくても既存JSONは読み込めます。未知の追加フィールドを一括削除・変換することはありません。
 
+- `inbox`: 原文
+- `drafts`: 整理・編集途中
+- `daily`: 承認済み記録
+- `handoffs`: ChatGPTとの受け渡し情報
+- `sessions`: 進行状態
+- `backups`: 上書き前の退避
+
 ドラフト承認で保存する当日の候補・分類結果は、既存の `structured_review` と `tomorrow_plan_proposal` に反映します。確定版タスクに紐付かない当日結果、問題、未分類などは、後方互換な任意フィールド `draft_approval` に保存します。
 
 ## 個人データの扱い
 
-`data/`、`logs/`、`backups/`、ZIPアーカイブはGitの追跡対象外です。テンプレート、テスト、README、CHANGELOGは追跡対象です。バックアップには個人データが含まれるため、安全な場所へ保管してください。
+`data/`、`logs/`、`backups/`、ZIPアーカイブ、実行時の`config/priorities.json`はGitの追跡対象外です。テンプレート、`config/priorities.example.json`、テスト、README、CHANGELOGは追跡対象です。バックアップには個人データが含まれるため、安全な場所へ保管してください。
 
 ## 安全設計
 
@@ -325,6 +367,8 @@ backups/
 - 自然文を整理する: `daily-review organize --date YYYY-MM-DD --dry-run`
 - 振り返りを一度に進める: `daily-review reflect --date YYYY-MM-DD`
 - 中断したドラフトを再開する: `daily-review reflect --date YYYY-MM-DD --resume`
+- ChatGPTへ渡す安全なパッケージを作る: `daily-review handoff --copy`
+- ChatGPT回答を確認付きで受信する: `daily-review receive --clipboard --approve`
 - 整理ドラフトを確認する: `daily-review review --date YYYY-MM-DD`
 - ドラフトを承認する: `daily-review approve --date YYYY-MM-DD --yes`
 - 保存状態を確認する: `daily-review status --date YYYY-MM-DD`

@@ -198,7 +198,7 @@ def test_chat_prompt_doctor_and_home_surface_chat_import(tmp_path):
     assert '"schema_version": "1.0"' in prompt.output
     assert "OK   chat import schema" in doctor.output
     assert "OK   chat import prompt" in doctor.output
-    assert f"daily-review chat --date {DAY}" in home.output
+    assert f"daily-review handoff --date {DAY} --copy" in home.output
 
 
 def test_doctor_reports_chat_prompt_schema_mismatch(tmp_path):

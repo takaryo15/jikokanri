@@ -13,6 +13,7 @@ SCHEMA_VERSION = "1.0"
 MAX_INPUT_BYTES = 100 * 1024
 
 ROOT_FIELDS = {"schema_version", "date", "raw_text", "today", "reflection", "tomorrow", "journal", "unclassified"}
+OPTIONAL_ROOT_FIELDS = {"handoff"}
 SECTION_FIELDS = {
     "today": {"main", "completed", "partial", "not_completed"},
     "reflection": {"good", "problems", "causes", "change_next"},
@@ -92,7 +93,7 @@ def validate_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]
     if not isinstance(raw_text, str) or not raw_text.strip():
         raise ChatSchemaError("raw_textは空でない文字列にしてください")
 
-    warnings = _unknown_field_warnings(payload, ROOT_FIELDS)
+    warnings = _unknown_field_warnings(payload, ROOT_FIELDS | OPTIONAL_ROOT_FIELDS)
     result: dict[str, Any] = {"schema_version": version, "date": payload["date"], "raw_text": raw_text}
     for section, fields in SECTION_FIELDS.items():
         value = payload[section]
@@ -105,6 +106,10 @@ def validate_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]
         result[section] = {field: _validate_text_list(value[field], f"{section}.{field}") for field in fields}
     result["journal"] = _validate_text_list(payload["journal"], "journal")
     result["unclassified"] = _validate_text_list(payload["unclassified"], "unclassified")
+    if "handoff" in payload:
+        if not isinstance(payload["handoff"], dict):
+            raise ChatSchemaError("handoffはオブジェクトにしてください")
+        result["handoff"] = dict(payload["handoff"])
     if len(result["today"]["main"]) > 3 or len(result["tomorrow"]["main"]) > 3:
         raise ChatSchemaError("Mainは最大3件です")
     return result, warnings

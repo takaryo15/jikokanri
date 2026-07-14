@@ -104,7 +104,7 @@ def test_doctor_reports_errors_without_changing_data_and_version(tmp_path):
     assert (tmp_path / "data/daily/bad.json").read_bytes() == before
     version = runner.invoke(app, ["--version"])
     assert version.exit_code == 0
-    assert version.output.strip() == "daily-review 1.0.0"
+    assert version.output.strip() == "daily-review 1.1.0rc1"
 
 
 def test_doctor_detects_plan_limits_and_task_result_status_but_allows_unknown_fields(tmp_path):
