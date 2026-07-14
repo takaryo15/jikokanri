@@ -49,6 +49,8 @@ def run_doctor(root: Path) -> dict[str, Any]:
         if not path.is_dir():
             if relative == Path("data/inbox"):
                 issues.append(_issue("WARN", "data/inbox がありません。daily-review input 実行時に自動作成されます"))
+            elif relative == Path("data/drafts"):
+                issues.append(_issue("WARN", "data/drafts がありません。daily-review organize 実行時に自動作成されます"))
             else:
                 issues.append(_issue("ERROR", f"必要なディレクトリがありません: {relative}"))
         elif not os.access(path, os.W_OK):
@@ -96,4 +98,13 @@ def run_doctor(root: Path) -> dict[str, Any]:
                     raise ValueError("entriesがありません")
             except (OSError, ValueError) as exc:
                 issues.append(_issue("ERROR", f"inbox JSONを読み込めません: {path.name} ({exc})"))
+    drafts_dir = root / "data" / "drafts"
+    if drafts_dir.is_dir():
+        for path in sorted(drafts_dir.glob("*.json")):
+            try:
+                value = read_json_file(path)
+                if not isinstance(value, dict) or not isinstance(value.get("source_entry_ids"), list):
+                    raise ValueError("source_entry_idsがありません")
+            except (OSError, ValueError) as exc:
+                issues.append(_issue("ERROR", f"draft JSONを読み込めません: {path.name} ({exc})"))
     return {"root": root, "daily_count": len(daily_files), "issues": issues, "checks": checks}

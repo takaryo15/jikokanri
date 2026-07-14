@@ -6,6 +6,14 @@
 
 - Natural-language raw-text storage through `daily-review input`.
 - Per-day raw input inboxes in `data/inbox`.
+- Rule-based inbox organization through `daily-review organize`.
+- Per-day review drafts in `data/drafts` with source-entry IDs and parser versioning.
+- 今日と明日のMain候補、および振り返り・原因・改善・日記・未分類のルールベース分類.
+
+### Safety
+
+- Organization drafts do not modify daily reviews, proposals, final plans, or raw inbox text.
+- Unknown or ambiguous sentences are retained as unclassified text instead of being inferred.
 
 ## 1.0.0 - 2026-07-14
 

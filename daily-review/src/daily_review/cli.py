@@ -40,6 +40,7 @@ from .weekly import build_weekly_summary
 from .reporting import build_report, weekly_trends
 from .doctor import run_doctor
 from .dashboard import build_daily_summary, next_action_kind, next_command
+from .organizer import organize_day
 
 
 app = typer.Typer(
@@ -644,6 +645,65 @@ def input_text(
     typer.echo(f"保存先: {path.relative_to(base)}")
 
 
+def _print_organize_result(result: dict[str, Any], base: Path, day: str, *, dry_run: bool) -> None:
+    draft = result["draft"]
+    if dry_run:
+        typer.echo("daily-review organize｜dry-run")
+    elif result["changed"]:
+        typer.echo("入力を整理しました")
+    else:
+        typer.echo("この日の入力はすでに整理済みです")
+    typer.echo(f"日付: {day}")
+    typer.echo(f"対象入力: {result['entry_count']}件")
+    typer.echo(f"今回整理: {result['new_entry_count']}件")
+    typer.echo(f"分類済み: {result['classified_count']}文")
+    typer.echo(f"未分類: {result['unclassified_count']}文")
+    typer.echo(f"保存先: {result['path'].relative_to(base)}")
+    for title, candidates in (("今日のMain候補", draft["today"]["main_candidates"]),
+                              ("明日のMain候補", draft["tomorrow"]["main_candidates"])):
+        typer.echo(f"{title}:")
+        if candidates:
+            for index, candidate in enumerate(candidates, start=1):
+                typer.echo(f"{index}. {candidate}")
+        else:
+            typer.echo("未記録")
+    if dry_run:
+        typer.echo("保存は行いませんでした")
+
+
+@app.command("organize")
+def organize(
+    date: str | None = DateOption,
+    dry_run: bool = typer.Option(False, "--dry-run", help="保存せずに整理結果だけを表示する"),
+    force: bool = typer.Option(False, "--force", help="既存ドラフトを全入力から安全に作り直す"),
+    json_output: bool = typer.Option(False, "--json", help="整理ドラフトをJSONで表示する"),
+    root: Path | None = RootOption,
+) -> None:
+    """inboxの原文をルールベースで整理ドラフトへ保存します。"""
+    base = _root(root)
+    day = _day(date)
+    try:
+        result = organize_day(base, day, force=force)
+    except LookupError:
+        typer.echo(f"ERROR: {day}の入力がありません", err=True)
+        typer.echo("先に daily-review input を実行してください", err=True)
+        raise typer.Exit(code=2)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"ERROR: 整理ドラフトを作成できません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+
+    if not dry_run and result["changed"]:
+        try:
+            atomic_write_json_data(result["path"], result["draft"])
+        except OSError as exc:
+            typer.echo(f"ERROR: 整理ドラフトを保存できません: {result['path']} ({exc})", err=True)
+            raise typer.Exit(code=4) from exc
+    if json_output:
+        typer.echo(json.dumps(result["draft"], ensure_ascii=False, indent=2))
+    else:
+        _print_organize_result(result, base, day, dry_run=dry_run)
+
+
 @app.command("save-raw")
 def save_raw(
     date: str | None = DateOption,
@@ -1060,6 +1120,10 @@ def _print_next_action(base: Path, day: str, *, include_date: bool = False) -> N
             typer.echo(f"ERROR: {error}", err=True)
         raise typer.Exit(code=3)
     action = next_action_kind(summary)
+    if action == "organize":
+        typer.echo("自然文入力が未整理です。")
+        typer.echo(f"daily-review organize --date {day}")
+        return
     if action == "proposal":
         typer.echo("明日の指示書が未承認です。")
         typer.echo(f"daily-review show-proposal --date {day}")
@@ -1106,6 +1170,8 @@ def _print_summary(summary: dict[str, Any], *, title: str = "状況") -> None:
     typer.echo(f"明日の確定版: {'記録済み' if final else '未記録'}")
     typer.echo(f"今週の記録日数: {summary['week_recorded_days']}日")
     typer.echo(f"今月の記録日数: {summary['month_recorded_days']}日")
+    typer.echo(f"自然文入力: {summary['inbox_entry_count']}件")
+    typer.echo(f"整理ドラフト: {'作成済み' if summary['draft'] else '未作成'}")
     typer.echo(f"次の操作: {next_command(summary)}")
 
 
@@ -1143,6 +1209,12 @@ def home(
         typer.echo("明日の確定版: 記録済み")
     elif report["tomorrow_proposal"]:
         typer.echo("明日の提案版: 未承認")
+    draft = report["draft"] or {}
+    if draft:
+        today_candidates = (draft.get("today") or {}).get("main_candidates") or []
+        tomorrow_candidates = (draft.get("tomorrow") or {}).get("main_candidates") or []
+        typer.echo(f"今日のMain候補: {len(today_candidates)}件")
+        typer.echo(f"明日のMain候補: {len(tomorrow_candidates)}件")
     doctor_report = run_doctor(base)
     errors = [item for item in doctor_report["issues"] if item["level"] == "ERROR"]
     if errors:

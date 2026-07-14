@@ -15,6 +15,7 @@ DATA_DIRS = [
     Path("data/weekly"),
     Path("data/monthly"),
     Path("data/inbox"),
+    Path("data/drafts"),
     Path("logs"),
     Path("templates"),
 ]
@@ -211,6 +212,10 @@ def monthly_log_path(root: Path, month: str) -> Path:
 
 def inbox_path(root: Path, day: str) -> Path:
     return root / "data" / "inbox" / f"{day}.json"
+
+
+def draft_path(root: Path, day: str) -> Path:
+    return root / "data" / "drafts" / f"{day}.json"
 
 
 def read_json_file(path: Path) -> dict[str, Any]:

@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from .date_utils import date_range, month_range_for, tomorrow_of, week_range_for
-from .storage import daily_path, load_daily, read_json_file
+from .storage import daily_path, draft_path, inbox_path, load_daily, read_json_file
 
 
 def _load_daily_safely(root: Path, day: str, errors: list[str]) -> dict[str, Any] | None:
@@ -50,6 +50,26 @@ def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
             incomplete.append({"task": task, "status": result.get("status") if result else None})
     week_start, week_end = week_range_for(day)
     month_start, month_end = month_range_for(day)
+    inbox_entries: list[Any] = []
+    inbox = inbox_path(root, day)
+    if inbox.exists():
+        try:
+            inbox_payload = read_json_file(inbox)
+            if not isinstance(inbox_payload, dict) or not isinstance(inbox_payload.get("entries"), list):
+                raise ValueError("entriesがありません")
+            inbox_entries = inbox_payload["entries"]
+        except (OSError, ValueError) as exc:
+            errors.append(f"inbox JSONを読み込めません: {day} ({exc})")
+    draft: dict[str, Any] | None = None
+    draft_file = draft_path(root, day)
+    if draft_file.exists():
+        try:
+            value = read_json_file(draft_file)
+            if not isinstance(value, dict):
+                raise ValueError("JSONオブジェクトではありません")
+            draft = value
+        except (OSError, ValueError) as exc:
+            errors.append(f"整理ドラフトを読み込めません: {day} ({exc})")
     return {
         "date": day,
         "entry": entry,
@@ -62,12 +82,16 @@ def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
         "week_recorded_days": _recorded_days(root, week_start, week_end, errors),
         "month_recorded_days": _recorded_days(root, month_start, month_end, errors),
         "incomplete_tasks": incomplete,
+        "inbox_entry_count": len(inbox_entries),
+        "draft": draft,
         "errors": list(dict.fromkeys(errors)),
     }
 
 
 def next_action_kind(summary: dict[str, Any]) -> str:
     entry = summary["entry"]
+    if summary.get("inbox_entry_count") and not summary.get("draft"):
+        return "organize"
     if entry.get("tomorrow_plan_proposal") and not entry.get("tomorrow_plan_final"):
         return "proposal"
     if entry.get("tomorrow_plan_final"):
@@ -88,4 +112,6 @@ def next_command(summary: dict[str, Any]) -> str:
         return f"daily-review today --date {target}"
     if kind == "today":
         return f"daily-review today --date {day}"
+    if kind == "organize":
+        return f"daily-review organize --date {day}"
     return f"daily-review close-day --date {day} --clipboard --dry-run"

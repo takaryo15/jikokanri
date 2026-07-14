@@ -13,7 +13,7 @@
 
 ## v1.1 開発中: 自然文入力
 
-`input` は、ChatGPT上で書いた自然文の原文を日別inboxへ安全に追記保存するv1.1開発中の入口です。この段階では文章を自動分類せず、日次レビュー、Main、タスク結果、明日の計画へ自動反映しません。
+`input` は、ChatGPT上で書いた自然文の原文を日別inboxへ安全に追記保存するv1.1開発中の入口です。入力原文は日次レビュー、Main、タスク結果、明日の計画へ自動反映しません。
 
 ```bash
 daily-review input --text "今日は院試を2問進めた"
@@ -23,6 +23,19 @@ echo "今日は院試を2問進めた" | daily-review input
 ```
 
 入力は `data/inbox/YYYY-MM-DD.json` に原文のまま追記されます。確認だけしたい場合は `--dry-run` を使います。
+
+### 自然文を整理する
+
+`organize` は、その日のinboxを外部APIやLLMを使わない固定ルールで「今日の候補」「振り返り」「明日の候補」「未分類」に整理し、`data/drafts/YYYY-MM-DD.json` に保存します。これは確認用のドラフトであり、日次JSON、提案版、確定版を変更せず、自動承認もしません。曖昧な文は推測せず `unclassified` に残します。
+
+```bash
+daily-review organize
+daily-review organize --date 2026-07-14
+daily-review organize --date 2026-07-14 --dry-run
+daily-review organize --date 2026-07-14 --json
+```
+
+同じ入力を再度整理しても書き換えず、新しいinbox入力がある場合だけドラフトへ追記します。全入力から作り直したい場合だけ `--force` を使います。ドラフトの候補を既存の確定データへ反映する操作は、後続フェーズでユーザー確認を前提に追加予定です。
 
 ## 設計思想
 
@@ -90,6 +103,8 @@ daily-review approve-plan
 | `next` | 次に実行する1コマンドを案内 |
 | `status` | 指定日の保存ファイル状態を確認 |
 | `doctor` | 保存構造とデータを読み取り専用で点検 |
+| `input` | 自然文の原文をinboxへ追記保存 |
+| `organize` | inboxをルールベースの確認用ドラフトへ整理 |
 
 `start`、`summary`、`home` は保存状態を読むだけで変更しません。指定日の確認には `daily-review start --date YYYY-MM-DD` または `daily-review summary --date YYYY-MM-DD` を使えます。
 
@@ -163,7 +178,7 @@ daily-review restore path/to/backup.zip --force
 
 ## doctor
 
-`doctor` はデータを変更せず、ディレクトリ、テンプレート、日次・週次・月次JSON、Markdown対応、Main数、最低ライン、task_resultsのstatusを点検します。
+`doctor` はデータを変更せず、ディレクトリ、テンプレート、日次・週次・月次JSON、inbox・draft JSON、Markdown対応、Main数、最低ライン、task_resultsのstatusを点検します。
 
 ```bash
 daily-review doctor
@@ -186,6 +201,7 @@ data/daily/YYYY-MM-DD.json
 data/weekly/YYYY-MM-DD_YYYY-MM-DD.json
 data/monthly/YYYY-MM.json
 data/inbox/YYYY-MM-DD.json
+data/drafts/YYYY-MM-DD.json
 logs/YYYY-MM-DD.md
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
 logs/monthly_YYYY-MM.md
@@ -205,6 +221,7 @@ backups/
 
 ## トラブルシューティング
 
+- 自然文を整理する: `daily-review organize --date YYYY-MM-DD --dry-run`
 - 保存状態を確認する: `daily-review status --date YYYY-MM-DD`
 - 日次の短い一覧を見る: `daily-review summary --date YYYY-MM-DD`
 - 毎日の統合画面を見る: `daily-review home`
