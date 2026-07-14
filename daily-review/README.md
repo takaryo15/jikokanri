@@ -21,7 +21,27 @@ daily-review receive --clipboard --approve
 daily-review home
 ```
 
-途中で止まった場合は `daily-review chat --resume`、初回またはv1.0から更新した後は `daily-review migrate` と `daily-review v11-check`、トラブル時は `daily-review doctor` を実行します。`migrate` は不足しているv1.1用の保存先だけを作成し、日次・週次・月次の既存データを変更しません。
+途中で止まった場合は `daily-review chat --resume`、初回または更新した後は `daily-review migrate` と `daily-review v11-check`、トラブル時は `daily-review doctor` を実行します。`migrate` は不足している保存先だけを作成し、日次・週次・月次の既存データを変更しません。
+
+## v1.2開発中: 目標管理の基盤
+
+目標は日次データとは独立して、`data/goals/items/`の1目標1ファイルとして保存します。物理削除は行わず、編集・状態変更・アーカイブの前には`data/backups/goals/`へ退避します。
+
+```bash
+daily-review goal add --title "大学院入試に合格する" --level medium --category "院試" --start-date 2026-07-14 --due-date 2026-08-31
+daily-review goal list
+daily-review goal show goal-xxxxxxxx
+daily-review goal edit goal-xxxxxxxx --due-date 2026-08-30
+daily-review goal status goal-xxxxxxxx completed
+daily-review goal archive goal-xxxxxxxx --yes
+```
+
+- `vision`: 人生・数年単位の方向性
+- `long`: 半年〜3年程度の長期目標
+- `medium`: 1〜6か月程度の中期目標
+- `short`: 1日〜1か月程度の短期目標
+
+`--qualitative`には「説明できる」のように達成を判断できる文章を指定します。`--metric`は`name|unit|baseline|target|direction`形式で、`increase`、`decrease`、`maintain`、`boolean`を指定できます。定性・定量指標から進捗を自動計算し、指標がない場合だけ`--manual-progress`を使えます。親目標には存在する未アーカイブ目標だけを指定でき、自己参照・循環参照・不自然な上位方向のlevel関係は拒否されます。
 
 ### 毎晩の推奨操作: ChatGPT往復フロー
 

@@ -5,7 +5,7 @@ import json
 from typer.testing import CliRunner
 
 from daily_review.cli import app
-from daily_review.migration import MIGRATION_ID
+from daily_review.migration import GOALS_MIGRATION_ID, MIGRATION_ID
 from daily_review.storage import resolve_root
 
 
@@ -44,7 +44,8 @@ def test_migrate_creates_only_missing_v11_support_files_and_keeps_daily_data(tmp
     repeated = runner.invoke(app, ["migrate", "--root", str(tmp_path), "--yes"])
     assert repeated.exit_code == 0
     history = json.loads((tmp_path / "data" / "migrations.json").read_text(encoding="utf-8"))
-    assert len(history["migrations"]) == 1
+    ids = [item["id"] for item in history["migrations"]]
+    assert ids.count(MIGRATION_ID) == ids.count(GOALS_MIGRATION_ID) == 1
 
 
 def test_migrate_never_overwrites_existing_priority_settings(tmp_path):

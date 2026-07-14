@@ -8,6 +8,7 @@ from . import __version__
 from .chat_schema import SCHEMA_VERSION
 from .date_utils import week_range_for
 from .handoff import HANDOFF_STATUSES, HANDOFF_VERSION, HandoffError, is_expired
+from .goals import GoalError, load_goals, validate_goal
 from .session import SESSION_STATUSES
 from .storage import (
     CHAT_IMPORT_PROMPT_NAME,
@@ -271,6 +272,26 @@ def run_doctor(root: Path) -> dict[str, Any]:
             issues.append(_issue("ERROR", f"優先順位設定が不正です: {exc}"))
         else:
             checks.append("priorities config")
+
+    goal_errors = False
+    try:
+        goals = load_goals(root)
+    except (OSError, ValueError, GoalError) as exc:
+        issues.append(_issue("ERROR", f"goal JSONを読み込めません: {exc}"))
+        goal_errors = True
+        goals = []
+    for goal in goals:
+        try:
+            validate_goal(goal, goals)
+        except (GoalError, ValueError) as exc:
+            goal_errors = True
+            issues.append(_issue("ERROR", f"goal {goal.get('id', '不明')}: {exc}"))
+    if not goal_errors:
+        checks.append("goals schema")
+        checks.append("goal relationships")
+        checks.append("goal metrics")
+    if (root / "data" / "goals" / "items").is_dir():
+        checks.append("goals directory")
 
     try:
         source_root = Path(__file__).resolve().parents[2]

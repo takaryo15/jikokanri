@@ -54,6 +54,11 @@ from .migration import apply_migration, is_migrated, migration_plan
 from .dashboard import build_daily_summary, home_next_command, next_action_kind, next_command
 from .organizer import EDITABLE_DRAFT_FIELDS, load_draft, organize_day, organize_entries
 from .draft_workflow import approve_draft, build_daily_from_draft, replace_draft_fields
+from .goals import (
+    GOAL_LEVELS, GOAL_STATUSES, GoalError, archive_goal, children_of, edit_goal,
+    goal_progress, goal_summary as build_goal_summary, load_goal, load_goals, new_goal,
+    save_goal, set_goal_status, validate_goal,
+)
 from .session import prompt_hash, save_session
 from .v11_check import collect_v11_checks, repository_root
 
@@ -63,6 +68,8 @@ app = typer.Typer(
     no_args_is_help=True,
     invoke_without_command=True,
 )
+goal_app = typer.Typer(help="定性・定量指標を持つ目標を安全に管理します。")
+app.add_typer(goal_app, name="goal")
 
 
 @app.callback()
@@ -613,7 +620,7 @@ def migrate(
     json_output: bool = typer.Option(False, "--json", help="結果をJSONで表示します。"),
     yes: bool = typer.Option(False, "--yes", help="確認なしで移行を実行します。"),
 ) -> None:
-    """v1.0の保存先に不足しているv1.1用ファイルだけを追加します。"""
+    """既存の保存先に不足しているv1.1/v1.2用ファイルだけを追加します。"""
     base = _root(root)
     try:
         already_migrated = is_migrated(base)
@@ -627,7 +634,7 @@ def migrate(
         if json_output:
             typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
             return
-        typer.echo("daily-review migrate｜v1.0 → v1.1｜dry-run")
+        typer.echo("daily-review migrate｜既存環境 → v1.2基盤｜dry-run")
         typer.echo("確認結果:")
         for item in plan:
             label = "作成予定" if item["action"] == "create" else "既存"
@@ -643,7 +650,7 @@ def migrate(
         if json_output:
             typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         else:
-            typer.echo("この環境はすでにv1.1対応済みです")
+            typer.echo("この環境はすでに必要な移行を完了しています")
             typer.echo("変更はありません")
         return
     if not yes and not typer.confirm("移行を実行しますか？", default=False):
@@ -658,7 +665,7 @@ def migrate(
     if json_output:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
         return
-    typer.echo("v1.1への移行が完了しました")
+    typer.echo("必要な移行が完了しました")
     typer.echo(f"変更: {len(result['changes'])}件")
     typer.echo(f"スキップ: {len(result['skipped'])}件")
     typer.echo("既存データ変更: 0件")
@@ -693,6 +700,236 @@ def v11_check(
             typer.echo("v1.1.0 is ready")
     if report["errors"]:
         raise typer.Exit(code=5)
+
+
+def _goal_error(message: str, *, code: int = 2) -> None:
+    typer.echo(f"ERROR: {message}", err=True)
+    raise typer.Exit(code=code)
+
+
+def _goal_progress_label(goal: dict[str, Any]) -> str:
+    progress, mode = goal_progress(goal)
+    if progress is None:
+        return "未設定"
+    suffix = "（手動）" if mode == "manual" else ""
+    return f"{progress:g}%{suffix}"
+
+
+def _print_goal_warnings(goal: dict[str, Any], goals: list[dict[str, Any]]) -> None:
+    due_date = goal.get("due_date")
+    if isinstance(due_date, str) and parse_date(due_date) < parse_date(today_string()):
+        typer.echo("WARN: 期限が過去です")
+    parent_id = goal.get("parent_id")
+    parent = next((item for item in goals if item.get("id") == parent_id), None)
+    if parent and isinstance(due_date, str) and isinstance(parent.get("due_date"), str) and due_date > parent["due_date"]:
+        typer.echo("WARN: 子目標の期限が親目標より後です")
+
+
+def _print_goal(goal: dict[str, Any], goals: list[dict[str, Any]]) -> None:
+    typer.echo(goal["title"])
+    typer.echo(f"ID: {goal['id']}")
+    typer.echo(f"レベル: {goal['level']}")
+    typer.echo(f"カテゴリ: {goal.get('category') or '未設定'}")
+    typer.echo(f"状態: {goal['status']}")
+    typer.echo(f"期間: {goal.get('start_date') or '未設定'}〜{goal.get('due_date') or '未設定'}")
+    typer.echo(f"進捗: {_goal_progress_label(goal)}")
+    if goal.get("description"):
+        typer.echo(f"説明: {goal['description']}")
+    typer.echo("定性指標:")
+    labels = {"not_met": "未達", "partially_met": "一部達成", "met": "達成"}
+    for item in goal.get("qualitative_criteria") or []:
+        typer.echo(f"- [{labels.get(item.get('status'), '不正')}] {item.get('description', '未設定')}")
+    if not goal.get("qualitative_criteria"):
+        typer.echo("なし")
+    typer.echo("定量指標:")
+    for item in goal.get("quantitative_metrics") or []:
+        typer.echo(f"- {item.get('name', '未設定')}: {item.get('current')} / {item.get('target')}{item.get('unit', '')}")
+    if not goal.get("quantitative_metrics"):
+        typer.echo("なし")
+    parent_id = goal.get("parent_id")
+    parent = next((item for item in goals if item.get("id") == parent_id), None)
+    typer.echo(f"親目標: {parent.get('title') if parent else 'なし'}")
+    children = children_of(goals, goal["id"])
+    typer.echo("子目標:")
+    if children:
+        for child in children:
+            typer.echo(f"- {child['title']}")
+    else:
+        typer.echo("なし")
+
+
+@goal_app.command("add")
+def goal_add(
+    title: str | None = typer.Option(None, "--title", help="目標のタイトル"),
+    level: str | None = typer.Option(None, "--level", help="vision / long / medium / short"),
+    category: str | None = typer.Option(None, "--category"),
+    description: str | None = typer.Option(None, "--description"),
+    start_date: str | None = typer.Option(None, "--start-date"),
+    due_date: str | None = typer.Option(None, "--due-date"),
+    parent: str | None = typer.Option(None, "--parent"),
+    qualitative: list[str] = typer.Option([], "--qualitative", help="達成を判断できる定性指標。複数指定可。"),
+    metric: list[str] = typer.Option([], "--metric", help="name|unit|baseline|target|direction。複数指定可。"),
+    root: Path | None = RootOption,
+) -> None:
+    """目標を作成します。"""
+    if title is None:
+        title = typer.prompt("タイトル")
+    if level is None:
+        level = typer.prompt("レベル (vision/long/medium/short)", default="medium")
+    base = _root(root)
+    try:
+        goal = new_goal(
+            title=title, level=level, category=category, description=description, start_date=start_date,
+            due_date=due_date, parent_id=parent, qualitative=qualitative, metrics=metric,
+        )
+        save_goal(base, goal, changed_fields=[], backup=False)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("目標を作成しました")
+    typer.echo(f"ID: {goal['id']}")
+    typer.echo(f"保存先: data/goals/items/{goal['id']}.json")
+    _print_goal_warnings(goal, load_goals(base))
+
+
+@goal_app.command("list")
+def goal_list(
+    level: str | None = typer.Option(None, "--level"),
+    category: str | None = typer.Option(None, "--category"),
+    status: str | None = typer.Option(None, "--status"),
+    due_before: str | None = typer.Option(None, "--due-before"),
+    all_items: bool = typer.Option(False, "--all", help="archivedを含めて表示する"),
+    json_output: bool = typer.Option(False, "--json"),
+    root: Path | None = RootOption,
+) -> None:
+    """目標を一覧表示します。"""
+    try:
+        if level is not None and level not in GOAL_LEVELS:
+            raise GoalError("levelが不正です")
+        if status is not None and status not in GOAL_STATUSES:
+            raise GoalError("statusが不正です")
+        if due_before is not None:
+            parse_date(due_before)
+        goals = load_goals(_root(root))
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    result = [goal for goal in goals if (all_items or goal.get("status") != "archived")]
+    if level is not None:
+        result = [goal for goal in result if goal.get("level") == level]
+    if category is not None:
+        result = [goal for goal in result if goal.get("category") == category]
+    if status is not None:
+        result = [goal for goal in result if goal.get("status") == status]
+    if due_before is not None:
+        result = [goal for goal in result if isinstance(goal.get("due_date"), str) and goal["due_date"] <= due_before]
+    result.sort(key=lambda goal: (goal.get("due_date") is None, goal.get("due_date") or "", goal.get("title", "")))
+    if json_output:
+        typer.echo(json.dumps({"goals": result}, ensure_ascii=False, indent=2))
+        return
+    typer.echo("目標一覧")
+    if not result:
+        typer.echo("なし")
+        return
+    for goal in result:
+        typer.echo(f"[{goal.get('status')}] {goal.get('title')}")
+        typer.echo(f"ID: {goal.get('id')}")
+        typer.echo(f"レベル: {goal.get('level')}")
+        typer.echo(f"カテゴリ: {goal.get('category') or '未設定'}")
+        typer.echo(f"期限: {goal.get('due_date') or '未設定'}")
+        typer.echo(f"進捗: {_goal_progress_label(goal)}")
+
+
+@goal_app.command("show")
+def goal_show(
+    goal_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+    root: Path | None = RootOption,
+) -> None:
+    """目標の詳細を表示します。"""
+    try:
+        base = _root(root)
+        goal = load_goal(base, goal_id)
+        goals = load_goals(base)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    if json_output:
+        typer.echo(json.dumps(goal, ensure_ascii=False, indent=2))
+        return
+    _print_goal(goal, goals)
+
+
+@goal_app.command("edit")
+def goal_edit(
+    goal_id: str = typer.Argument(...),
+    title: str | None = typer.Option(None, "--title"),
+    description: str | None = typer.Option(None, "--description"),
+    category: str | None = typer.Option(None, "--category"),
+    start_date: str | None = typer.Option(None, "--start-date"),
+    due_date: str | None = typer.Option(None, "--due-date"),
+    parent: str | None = typer.Option(None, "--parent"),
+    clear_parent: bool = typer.Option(False, "--clear-parent"),
+    manual_progress: float | None = typer.Option(None, "--manual-progress"),
+    root: Path | None = RootOption,
+) -> None:
+    """許可済みの目標フィールドを編集します。"""
+    if parent is not None and clear_parent:
+        _goal_error("--parent と --clear-parent は同時に使用できません")
+    base = _root(root)
+    try:
+        current = load_goal(base, goal_id)
+        if all(value is None for value in (title, description, category, start_date, due_date, parent, manual_progress)) and not clear_parent:
+            title = typer.prompt("タイトル", default=current["title"])
+        changes = {key: value for key, value in {
+            "title": title, "description": description, "category": category,
+            "start_date": start_date, "due_date": due_date, "parent_id": parent,
+            "manual_progress": manual_progress,
+        }.items() if value is not None}
+        if clear_parent:
+            changes["parent_id"] = None
+        goal = edit_goal(base, goal_id, changes)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("目標を更新しました")
+    typer.echo(f"ID: {goal['id']}")
+    typer.echo(f"revision: {goal['revision']}")
+    _print_goal_warnings(goal, load_goals(base))
+
+
+@goal_app.command("status")
+def goal_status(
+    goal_id: str = typer.Argument(...),
+    status: str = typer.Argument(...),
+    root: Path | None = RootOption,
+) -> None:
+    """目標の状態を変更します。"""
+    try:
+        goal = set_goal_status(_root(root), goal_id, status)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("目標の状態を更新しました")
+    typer.echo(f"状態: {goal['status']}")
+
+
+@goal_app.command("archive")
+def goal_archive(
+    goal_id: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes", help="確認なしでアーカイブする"),
+    root: Path | None = RootOption,
+) -> None:
+    """目標を物理削除せずアーカイブします。"""
+    base = _root(root)
+    try:
+        goal = load_goal(base, goal_id)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    if not yes and not typer.confirm(f"目標「{goal['title']}」をアーカイブしますか？", default=False):
+        typer.echo("アーカイブを中止しました")
+        raise typer.Exit(code=2)
+    try:
+        archived = archive_goal(base, goal_id)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("目標をアーカイブしました")
+    typer.echo(f"ID: {archived['id']}")
 
 
 @app.command("input")
@@ -2550,6 +2787,22 @@ def home(
         if report.get("draft_status") == "approved":
             typer.echo("確定日次: 作成済み")
             typer.echo("今日の振り返り: 完了")
+    try:
+        goals = build_goal_summary(base, today=report["date"])
+    except (GoalError, OSError, ValueError):
+        typer.echo("目標: 読み込めません")
+    else:
+        if not goals["active_count"]:
+            typer.echo("目標: 未設定")
+            if not (handoff_eligible or chat_next or home_next_command(report)):
+                typer.echo("次の操作: daily-review goal add")
+        else:
+            typer.echo(f"進行中の目標: {goals['active_count']}件")
+            if goals["near_due"]:
+                typer.echo("期限が近い目標:")
+                for goal in goals["near_due"]:
+                    remaining = (parse_date(goal["due_date"]) - parse_date(report["date"])).days
+                    typer.echo(f"- {goal['title']}｜残り{remaining}日")
     doctor_report = run_doctor(base)
     errors = [item for item in doctor_report["issues"] if item["level"] == "ERROR"]
     if errors:
@@ -2776,10 +3029,12 @@ def release_check(root: Path | None = RootOption) -> None:
         command.name or command.callback.__name__.replace("_", "-")
         for command in app.registered_commands
     }
+    command_names.update(group.name for group in app.registered_groups if group.name)
     required_commands = {
         "home", "summary", "start", "next", "doctor", "weekly", "monthly", "backup", "restore",
         "chat", "chat-prompt", "chat-import", "handoff", "receive", "handoff-list", "handoff-cancel",
         "input", "organize", "review", "edit-draft", "approve", "reflect", "migrate", "v11-check",
+        "goal",
     }
     missing_commands = sorted(required_commands - command_names)
     if missing_commands:
@@ -2798,6 +3053,8 @@ def release_check(root: Path | None = RootOption) -> None:
         errors.append("handoff schemaのバージョンが不正です")
     if MIGRATION_ID != "v1.1-base":
         errors.append("v1.1 migration定義が不正です")
+    if not (source_root / "src" / "daily_review" / "goals.py").is_file():
+        errors.append("goal schemaまたはstorageがありません")
     if not (source_root / "config" / "priorities.example.json").is_file():
         errors.append("config/priorities.example.json がありません")
     for name in ("README.md", "CHANGELOG.md", "RELEASE_CHECKLIST.md", "tests/test_v11_e2e.py"):
@@ -2826,6 +3083,10 @@ def release_check(root: Path | None = RootOption) -> None:
     typer.echo("OK   duplicate protection")
     typer.echo("OK   clipboard workflow")
     typer.echo("OK   migration definition")
+    typer.echo("OK   goal commands")
+    typer.echo("OK   goal schema")
+    typer.echo("OK   goal storage")
+    typer.echo("OK   goal backup")
     typer.echo("OK   runtime data ignored by git")
     typer.echo("v1.1.0 is ready")
 

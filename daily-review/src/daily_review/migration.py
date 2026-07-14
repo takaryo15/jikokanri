@@ -16,6 +16,7 @@ from .storage import (
 
 
 MIGRATION_ID = "v1.1-base"
+GOALS_MIGRATION_ID = "v1.2-goals-base"
 MIGRATION_HISTORY_PATH = Path("data/migrations.json")
 MIGRATION_DIRECTORIES = (
     Path("data/inbox"),
@@ -26,6 +27,11 @@ MIGRATION_DIRECTORIES = (
     Path("data/backups/daily"),
     Path("data/backups/drafts"),
     Path("config"),
+)
+GOALS_MIGRATION_DIRECTORIES = (
+    Path("data/goals"),
+    Path("data/goals/items"),
+    Path("data/backups/goals"),
 )
 
 
@@ -44,16 +50,16 @@ def load_migration_history(root: Path) -> dict[str, Any]:
 
 
 def is_migrated(root: Path) -> bool:
-    return any(
-        isinstance(item, dict) and item.get("id") == MIGRATION_ID
-        for item in load_migration_history(root)["migrations"]
-    )
+    applied = {item.get("id") for item in load_migration_history(root)["migrations"] if isinstance(item, dict)}
+    return {MIGRATION_ID, GOALS_MIGRATION_ID} <= applied
 
 
 def migration_plan(root: Path) -> list[dict[str, str]]:
     """Return only missing, safe-to-create v1.1 workspace items."""
     plan: list[dict[str, str]] = []
     for relative in MIGRATION_DIRECTORIES:
+        plan.append({"path": str(relative), "action": "existing" if (root / relative).exists() else "create"})
+    for relative in GOALS_MIGRATION_DIRECTORIES:
         plan.append({"path": str(relative), "action": "existing" if (root / relative).exists() else "create"})
     priorities = priorities_path(root)
     plan.append({
@@ -69,11 +75,8 @@ def migration_plan(root: Path) -> list[dict[str, str]]:
 
 
 def apply_migration(root: Path) -> dict[str, Any]:
-    """Create missing v1.1 support files without changing existing user data."""
+    """Create missing v1.1/v1.2 support files without changing user data."""
     history = load_migration_history(root)
-    if any(isinstance(item, dict) and item.get("id") == MIGRATION_ID for item in history["migrations"]):
-        return {"already_migrated": True, "changes": [], "skipped": migration_plan(root)}
-
     plan = migration_plan(root)
     changes: list[str] = []
     for item in plan:
@@ -92,12 +95,16 @@ def apply_migration(root: Path) -> dict[str, Any]:
             target.mkdir(parents=True, exist_ok=True)
         changes.append(f"create {item['path']}")
 
-    history["migrations"].append({
-        "id": MIGRATION_ID,
-        "applied_at": now_iso(),
-        "from_version": "1.0.0",
-        "to_version": __version__,
-        "changes": changes,
-    })
-    atomic_write_json_data(migration_history_path(root), history)
-    return {"already_migrated": False, "changes": changes, "skipped": [item for item in plan if item["action"] == "existing"]}
+    applied = {item.get("id") for item in history["migrations"] if isinstance(item, dict)}
+    new_records = []
+    if MIGRATION_ID not in applied:
+        new_records.append({"id": MIGRATION_ID, "from_version": "1.0.0"})
+    if GOALS_MIGRATION_ID not in applied:
+        new_records.append({"id": GOALS_MIGRATION_ID, "from_version": "1.1.0"})
+    for record in new_records:
+        history["migrations"].append({
+            **record, "applied_at": now_iso(), "to_version": __version__, "changes": list(changes),
+        })
+    if new_records:
+        atomic_write_json_data(migration_history_path(root), history)
+    return {"already_migrated": not changes and not new_records, "changes": changes, "skipped": [item for item in plan if item["action"] == "existing"]}

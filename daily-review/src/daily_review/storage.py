@@ -18,9 +18,12 @@ DATA_DIRS = [
     Path("data/drafts"),
     Path("data/sessions"),
     Path("data/handoffs"),
+    Path("data/goals"),
+    Path("data/goals/items"),
     Path("data/backups"),
     Path("data/backups/daily"),
     Path("data/backups/drafts"),
+    Path("data/backups/goals"),
     Path("logs"),
     Path("templates"),
 ]

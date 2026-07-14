@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- vision・long・medium・shortの目標管理と`daily-review goal add/list/show/edit/status/archive`。
+- 定性・定量指標、親子目標、期限、進捗率、編集履歴、更新前バックアップ。
+- `data/goals/items`を正データとする安全な目標保存、doctor検査、migration、homeの目標概要。
+
 ## 1.1.0 - 2026-07-14
 
 ### Added
