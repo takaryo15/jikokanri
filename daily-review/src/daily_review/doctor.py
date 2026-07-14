@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
-from .storage import DATA_DIRS, TEMPLATE_CONTENTS, read_json_file
+from . import __version__
+from .date_utils import week_range_for
+from .storage import DATA_DIRS, REQUIRED_TEMPLATE_NAMES, read_json_file
 from .validation import ALLOWED_TASK_RESULT_STATUSES, validate_plan, validate_task_results
 
 
@@ -36,12 +39,32 @@ def _check_daily(path: Path, issues: list[dict[str, str]]) -> None:
 
 def run_doctor(root: Path) -> dict[str, Any]:
     issues: list[dict[str, str]] = []
+    checks: list[str] = []
+    if root.exists() and root.is_dir():
+        checks.append("保存先ルート")
+    else:
+        issues.append(_issue("ERROR", f"保存先ルートを確認できません: {root}"))
     for relative in DATA_DIRS:
-        if not (root / relative).is_dir():
+        path = root / relative
+        if not path.is_dir():
             issues.append(_issue("ERROR", f"必要なディレクトリがありません: {relative}"))
-    for name in TEMPLATE_CONTENTS:
+        elif not os.access(path, os.W_OK):
+            issues.append(_issue("WARN", f"書き込みを確認できません: {relative}"))
+        else:
+            checks.append(str(relative))
+    for name in REQUIRED_TEMPLATE_NAMES:
         if not (root / "templates" / name).is_file():
             issues.append(_issue("ERROR", f"必要なテンプレートがありません: templates/{name}"))
+    if all((root / "templates" / name).is_file() for name in REQUIRED_TEMPLATE_NAMES):
+        checks.append("必須テンプレート")
+    if week_range_for("2026-07-08") == ("2026-07-07", "2026-07-13"):
+        checks.append("火曜始まりの週")
+    else:
+        issues.append(_issue("ERROR", "週の開始曜日が火曜日ではありません"))
+    if __version__:
+        checks.append(f"package version {__version__}")
+    else:
+        issues.append(_issue("ERROR", "package versionを取得できません"))
     daily_dir = root / "data" / "daily"
     daily_files = sorted(daily_dir.glob("*.json")) if daily_dir.is_dir() else []
     for path in daily_files:
@@ -61,4 +84,4 @@ def run_doctor(root: Path) -> dict[str, Any]:
             markdown_name = f"{prefix}{path.stem}.md" if folder == "weekly" else f"monthly_{path.stem}.md"
             if not (root / "logs" / markdown_name).is_file():
                 issues.append(_issue("WARN", f"Markdownが存在しない{folder}データ: {path.name}"))
-    return {"daily_count": len(daily_files), "issues": issues}
+    return {"root": root, "daily_count": len(daily_files), "issues": issues, "checks": checks}

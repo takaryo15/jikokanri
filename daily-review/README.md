@@ -2,6 +2,15 @@
 
 `daily-review` は、毎日の振り返り、翌日の指示書、実行結果をローカルのJSONとMarkdownに残すPython CLIです。v1.0.0では、週次・月次振り返りと、ローカルバックアップ・安全な復元・状態点検までを扱います。
 
+## v1でできること
+
+- 生ログ、日記、整形済み振り返りのローカル保存
+- 明日の指示書の提案、手動承認、結果記録
+- 日次の入口 `home`、状況一覧 `summary`、夜の案内 `start`
+- 火曜始まり・月曜終わりの週次、暦月の月次振り返り
+- 読み取り専用の `doctor` と `release-check`
+- SHA-256 manifest付きのバックアップと安全な復元
+
 ## 設計思想
 
 - 生ログは加工せず保存します。
@@ -21,9 +30,26 @@ daily-review --version
 daily-review init
 ```
 
-保存先は既定でカレントディレクトリです。別の保存先を使うときは、各コマンドに `--root /path/to/root` を付けます。`init` は既存のデータとテンプレートを上書きしません。
+保存先は自動検出されます。`daily-review/` 内でも、その親のリポジトリルートからでも実行できます。別の保存先を使うときは、各コマンドに `--root /path/to/root` を付けます。明示した `--root` が常に優先されます。`init` は既存のデータとテンプレートを上書きしません。
 
 ## 毎日の運用
+
+毎日の入口は `home` です。状況、Main、未完了タスク、明日の計画、次の操作をまとめて表示します。
+
+```bash
+daily-review home
+daily-review home --date 2026-07-14
+```
+
+最短運用は次のとおりです。
+
+```bash
+daily-review home
+daily-review close-day --date YYYY-MM-DD --clipboard --dry-run
+daily-review close-day --date YYYY-MM-DD --clipboard
+daily-review show-proposal --date YYYY-MM-DD
+daily-review approve-plan --date YYYY-MM-DD
+```
 
 朝は確定済み指示書を確認します。
 
@@ -41,7 +67,39 @@ daily-review show-proposal
 daily-review approve-plan
 ```
 
-個別保存が必要な場合は、`save-raw`、`save-review`、`save-proposal`、`save-night`、`record-results` も利用できます。次の操作が分からないときは、まず `daily-review start` を実行してください。`start` は保存状態を読むだけで変更せず、必要な次のコマンドを案内します。指定日の確認には `daily-review start --date YYYY-MM-DD`、保存状況の詳細には `daily-review status --date YYYY-MM-DD` を使えます。従来の `daily-review next` も同じ案内を表示します。
+個別保存が必要な場合は、`save-raw`、`save-review`、`save-proposal`、`save-night`、`record-results` も利用できます。
+
+| コマンド | 役割 |
+| --- | --- |
+| `home` | 毎日最初に見る統合画面 |
+| `summary` | 計画・記録・次の操作の短い一覧 |
+| `start` | 今から夜の運用を始めるための案内 |
+| `next` | 次に実行する1コマンドを案内 |
+| `status` | 指定日の保存ファイル状態を確認 |
+| `doctor` | 保存構造とデータを読み取り専用で点検 |
+
+`start`、`summary`、`home` は保存状態を読むだけで変更しません。指定日の確認には `daily-review start --date YYYY-MM-DD` または `daily-review summary --date YYYY-MM-DD` を使えます。
+
+## 夜の振り返りと翌日の承認
+
+`close-day` は当日の結果、振り返り、翌日提案を一括保存します。保存前に必ず `--dry-run` で確認できます。提案版は未承認のままで、`approve-plan` を実行したときだけ確定版になります。
+
+```bash
+daily-review close-day --date 2026-07-14 --clipboard --dry-run
+daily-review close-day --date 2026-07-14 --clipboard
+daily-review show-proposal --date 2026-07-14
+daily-review approve-plan --date 2026-07-14
+```
+
+## 結果記録
+
+翌日の確定版をID付きで確認し、JSONファイルまたは標準入力から結果を記録します。`carryover` は候補を表示するだけで、翌日の計画を変更しません。
+
+```bash
+daily-review today --date 2026-07-15 --show-ids
+daily-review record-results --date 2026-07-15 --file task_results.json
+daily-review carryover --date 2026-07-15
+```
 
 ## 週次・月次振り返り
 
@@ -98,7 +156,15 @@ daily-review restore path/to/backup.zip --force
 daily-review doctor
 ```
 
-`WARN` は不足したMarkdownなど、`ERROR` は読めないJSONや不正な計画を示します。古いJSONに新規フィールドがないことだけではエラーにしません。
+`doctor` は採用した保存先ルート、書き込み可能性、火曜始まりの週、パッケージバージョンも表示します。`WARN` は不足したMarkdownなど、`ERROR` は読めないJSONや不正な計画を示します。古いJSONに新規フィールドがないことだけではエラーにしません。正常時は最後に `daily-review doctor: OK` を表示します。
+
+## release-check
+
+`release-check` はv1.0.0のバージョン、package metadata、主要コマンド、保存先、doctorの重大エラーを読み取り専用で確認します。
+
+```bash
+daily-review release-check
+```
 
 ## 保存構造とJSON
 
@@ -115,6 +181,10 @@ backups/
 
 日次JSONには生ログ、整形済み振り返り、提案版、確定版、タスク結果を必要に応じて保存します。新しい任意フィールドがなくても既存JSONは読み込めます。未知の追加フィールドを一括削除・変換することはありません。
 
+## 個人データの扱い
+
+`data/`、`logs/`、`backups/`、ZIPアーカイブはGitの追跡対象外です。テンプレート、テスト、README、CHANGELOGは追跡対象です。バックアップには個人データが含まれるため、安全な場所へ保管してください。
+
 ## 安全設計
 
 日次JSONの更新は一時ファイルを経由します。バックアップは読み取り専用、復元は検証後に実行し、既定では競合を停止します。`proposal` の自動承認、carryoverの自動追加、改善提案の自動反映は行いません。
@@ -122,6 +192,8 @@ backups/
 ## トラブルシューティング
 
 - 保存状態を確認する: `daily-review status --date YYYY-MM-DD`
+- 日次の短い一覧を見る: `daily-review summary --date YYYY-MM-DD`
+- 毎日の統合画面を見る: `daily-review home`
 - データ全体を点検する: `daily-review doctor`
 - 次の操作を確認する: `daily-review next`
 - 日次運用を開始する: `daily-review start`
@@ -131,6 +203,10 @@ backups/
 ## v1で実装しないもの
 
 外部サービス連携、通知、LLM呼び出し、自動承認、自動計画変更はv1の対象外です。
+
+## 今後の候補
+
+将来の候補として、データのエクスポート、運用テンプレートの追加、より詳細なローカル分析があります。いずれもv1では自動実行しません。
 
 ## 開発・テスト
 

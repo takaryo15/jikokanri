@@ -1,0 +1,91 @@
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+
+from .date_utils import date_range, month_range_for, tomorrow_of, week_range_for
+from .storage import daily_path, load_daily, read_json_file
+
+
+def _load_daily_safely(root: Path, day: str, errors: list[str]) -> dict[str, Any] | None:
+    try:
+        return load_daily(root, day)
+    except (OSError, ValueError) as exc:
+        errors.append(f"日次JSONを読み込めません: {day} ({exc})")
+        return None
+
+
+def _find_final_by_target(root: Path, target: str, errors: list[str]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    directory = root / "data" / "daily"
+    if not directory.is_dir():
+        return None, None
+    for path in sorted(directory.glob("*.json")):
+        try:
+            entry = read_json_file(path)
+        except (OSError, ValueError) as exc:
+            errors.append(f"日次JSONを読み込めません: {path.name} ({exc})")
+            continue
+        final = entry.get("tomorrow_plan_final") or {}
+        if final.get("target_date") == target:
+            return entry, final
+    return None, None
+
+
+def _recorded_days(root: Path, start: str, end: str, errors: list[str]) -> int:
+    return sum(1 for day in date_range(start, end) if _load_daily_safely(root, day, errors) is not None)
+
+
+def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
+    """Read the current daily state without writing or migrating anything."""
+    errors: list[str] = []
+    entry = _load_daily_safely(root, day, errors) or {}
+    final_entry, today_final = _find_final_by_target(root, day, errors)
+    results = {item.get("task_id"): item for item in (final_entry or {}).get("task_results") or []}
+    tasks = today_final.get("tasks") or [] if today_final else []
+    recorded_results = sum(1 for task in tasks if task.get("id") in results)
+    incomplete = []
+    for task in tasks:
+        result = results.get(task.get("id"))
+        if not result or result.get("status") != "completed":
+            incomplete.append({"task": task, "status": result.get("status") if result else None})
+    week_start, week_end = week_range_for(day)
+    month_start, month_end = month_range_for(day)
+    return {
+        "date": day,
+        "entry": entry,
+        "today_final": today_final or None,
+        "today_main": (today_final or {}).get("main") or [],
+        "task_results": {"recorded": recorded_results, "total": len(tasks), "exists": bool(results)},
+        "night_review_exists": bool(entry.get("raw_log") or entry.get("structured_review") or entry.get("diary")),
+        "tomorrow_proposal": entry.get("tomorrow_plan_proposal"),
+        "tomorrow_final": entry.get("tomorrow_plan_final"),
+        "week_recorded_days": _recorded_days(root, week_start, week_end, errors),
+        "month_recorded_days": _recorded_days(root, month_start, month_end, errors),
+        "incomplete_tasks": incomplete,
+        "errors": list(dict.fromkeys(errors)),
+    }
+
+
+def next_action_kind(summary: dict[str, Any]) -> str:
+    entry = summary["entry"]
+    if entry.get("tomorrow_plan_proposal") and not entry.get("tomorrow_plan_final"):
+        return "proposal"
+    if entry.get("tomorrow_plan_final"):
+        return "complete"
+    if summary["today_final"]:
+        return "today"
+    return "review"
+
+
+def next_command(summary: dict[str, Any]) -> str:
+    entry = summary["entry"]
+    day = summary["date"]
+    kind = next_action_kind(summary)
+    if kind == "proposal":
+        return f"daily-review show-proposal --date {day}"
+    if kind == "complete":
+        target = entry["tomorrow_plan_final"].get("target_date", tomorrow_of(day))
+        return f"daily-review today --date {target}"
+    if kind == "today":
+        return f"daily-review today --date {day}"
+    return f"daily-review close-day --date {day} --clipboard --dry-run"

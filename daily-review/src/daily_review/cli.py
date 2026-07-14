@@ -4,6 +4,7 @@ import json
 import platform
 import subprocess
 import sys
+from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,7 @@ from .validation import ValidationResult, validate_daily, validate_plan
 from .weekly import build_weekly_summary
 from .reporting import build_report, weekly_trends
 from .doctor import run_doctor
+from .dashboard import build_daily_summary, next_action_kind, next_command
 
 
 app = typer.Typer(
@@ -70,8 +72,30 @@ def _root(path: Path | None) -> Path:
     return resolve_root(path)
 
 
+def _metadata_version() -> str | None:
+    """Read this source checkout's metadata before unrelated editable installs."""
+    package_root = Path(__file__).resolve().parents[1]
+    pkg_info = package_root / "daily_review.egg-info" / "PKG-INFO"
+    if pkg_info.is_file():
+        for line in pkg_info.read_text(encoding="utf-8").splitlines():
+            if line.startswith("Version: "):
+                return line.removeprefix("Version: ")
+    try:
+        return package_version("daily-review")
+    except PackageNotFoundError:
+        return None
+
+
 def _day(value: str | None) -> str:
-    return value or today_string()
+    if value is None:
+        return today_string()
+    try:
+        parse_date(value)
+    except ValueError as exc:
+        raise typer.BadParameter(
+            "日付は YYYY-MM-DD 形式で指定してください。例: daily-review summary --date 2026-07-14"
+        ) from exc
+    return value
 
 
 def _read_text_from_file_or_stdin(file: Path | None) -> str:
@@ -939,23 +963,27 @@ def show_proposal(
 
 
 def _print_next_action(base: Path, day: str, *, include_date: bool = False) -> None:
-    entry = load_daily(base, day)
-
-    if entry and entry.get("tomorrow_plan_proposal") and not entry.get("tomorrow_plan_final"):
+    summary = build_daily_summary(base, day)
+    entry = summary["entry"]
+    if summary["errors"]:
+        for error in summary["errors"]:
+            typer.echo(f"ERROR: {error}", err=True)
+        raise typer.Exit(code=3)
+    action = next_action_kind(summary)
+    if action == "proposal":
         typer.echo("明日の指示書が未承認です。")
         typer.echo(f"daily-review show-proposal --date {day}")
         typer.echo(f"daily-review approve-plan --date {day}")
         return
 
-    if entry and entry.get("tomorrow_plan_final"):
+    if action == "complete":
         target = entry["tomorrow_plan_final"].get("target_date", tomorrow_of(day))
         typer.echo("今日の夜の処理は完了しています。")
         typer.echo("翌朝:")
         typer.echo(f"daily-review today --date {target}")
         return
 
-    _, today_plan, pending_source = _find_plan_by_target(base, day)
-    if today_plan and not pending_source:
+    if action == "today":
         typer.echo("今日の指示書があります。")
         typer.echo(f"daily-review today --date {day}")
         return
@@ -966,6 +994,73 @@ def _print_next_action(base: Path, day: str, *, include_date: bool = False) -> N
     typer.echo("3. 以下を実行する")
     date_option = f" --date {day}" if include_date else ""
     typer.echo(f"daily-review close-day{date_option} --clipboard --dry-run")
+
+
+def _print_summary(summary: dict[str, Any], *, title: str = "状況") -> None:
+    today_final = summary["today_final"]
+    results = summary["task_results"]
+    proposal = summary["tomorrow_proposal"]
+    final = summary["tomorrow_final"]
+    typer.echo(f"{title}｜{summary['date']}")
+    typer.echo(f"今日の確定版: {'記録済み' if today_final else '未記録'}")
+    typer.echo("今日のMain:")
+    if summary["today_main"]:
+        for index, item in enumerate(summary["today_main"], start=1):
+            typer.echo(f"{index}. {item}")
+    else:
+        typer.echo("未記録")
+    result_label = f"{results['recorded']}/{results['total']}件" if today_final else "未記録"
+    typer.echo(f"タスク結果: {result_label}")
+    typer.echo(f"夜の振り返り: {'記録済み' if summary['night_review_exists'] else '未記録'}")
+    typer.echo(f"明日の提案版: {'記録済み' if proposal else '未記録'}")
+    typer.echo(f"明日の確定版: {'記録済み' if final else '未記録'}")
+    typer.echo(f"今週の記録日数: {summary['week_recorded_days']}日")
+    typer.echo(f"今月の記録日数: {summary['month_recorded_days']}日")
+    typer.echo(f"次の操作: {next_command(summary)}")
+
+
+@app.command()
+def summary(
+    date: str | None = DateOption,
+    root: Path | None = RootOption,
+) -> None:
+    """指定日の計画・記録・次の操作を短く表示します。"""
+    report = build_daily_summary(_root(root), _day(date))
+    _print_summary(report, title="日次サマリー")
+    if report["errors"]:
+        for error in report["errors"]:
+            typer.echo(f"ERROR: {error}", err=True)
+        raise typer.Exit(code=3)
+
+
+@app.command()
+def home(
+    date: str | None = DateOption,
+    root: Path | None = RootOption,
+) -> None:
+    """毎日最初に見る、計画・未完了・次の操作の統合画面です。"""
+    base = _root(root)
+    report = build_daily_summary(base, _day(date))
+    _print_summary(report, title="daily-review home")
+    typer.echo("未完了タスク:")
+    if report["incomplete_tasks"]:
+        for index, item in enumerate(report["incomplete_tasks"], start=1):
+            task = item["task"]
+            typer.echo(f"{index}. [{task.get('area', '未設定')}] {task.get('task', '未設定')}（{_task_result_label(item['status'])}）")
+    else:
+        typer.echo("なし")
+    if report["tomorrow_final"]:
+        typer.echo("明日の確定版: 記録済み")
+    elif report["tomorrow_proposal"]:
+        typer.echo("明日の提案版: 未承認")
+    doctor_report = run_doctor(base)
+    errors = [item for item in doctor_report["issues"] if item["level"] == "ERROR"]
+    if errors:
+        typer.echo(f"WARN: doctorで重大エラーが{len(errors)}件あります。daily-review doctor を実行してください。")
+    if report["errors"]:
+        for error in report["errors"]:
+            typer.echo(f"ERROR: {error}", err=True)
+        raise typer.Exit(code=3)
 
 
 @app.command("start")
@@ -1149,13 +1244,52 @@ def doctor(root: Path | None = RootOption) -> None:
     report = run_doctor(_root(root))
     errors = [item for item in report["issues"] if item["level"] == "ERROR"]
     warnings = [item for item in report["issues"] if item["level"] == "WARN"]
+    typer.echo(f"保存先ルート: {report['root']}")
     typer.echo("OK   ディレクトリ構造・テンプレート・JSONを点検しました")
     typer.echo(f"OK   日次JSON {report['daily_count']}件")
+    for check in report["checks"]:
+        typer.echo(f"OK   {check}")
     for item in warnings + errors:
         typer.echo(f"{item['level']} {item['message']}")
-    typer.echo(f"結果：WARN {len(warnings)}件、ERROR {len(errors)}件")
+    if errors:
+        typer.echo("daily-review doctor: ERROR")
+        typer.echo(f"WARN {len(warnings)}件 / ERROR {len(errors)}件")
+    else:
+        typer.echo("daily-review doctor: OK")
+        if warnings:
+            typer.echo(f"WARN {len(warnings)}件 / ERROR 0件")
     if errors:
         raise typer.Exit(code=1)
+
+
+@app.command("release-check")
+def release_check(root: Path | None = RootOption) -> None:
+    """v1.0.0 リリースに必要なローカル状態を読み取り専用で確認します。"""
+    base = _root(root)
+    report = run_doctor(base)
+    errors = [item["message"] for item in report["issues"] if item["level"] == "ERROR"]
+    installed_version = _metadata_version()
+    if __version__ != "1.0.0":
+        errors.append(f"アプリのバージョンが1.0.0ではありません: {__version__}")
+    if installed_version != __version__:
+        errors.append("package metadataのバージョンを取得できないか一致しません")
+    command_names = {
+        command.name or command.callback.__name__.replace("_", "-")
+        for command in app.registered_commands
+    }
+    required_commands = {"home", "summary", "start", "next", "doctor", "weekly", "monthly", "backup", "restore"}
+    missing_commands = sorted(required_commands - command_names)
+    if missing_commands:
+        errors.append("主要コマンドが登録されていません: " + ", ".join(missing_commands))
+    typer.echo(f"保存先ルート: {report['root']}")
+    typer.echo(f"version: {__version__}")
+    if errors:
+        for error in errors:
+            typer.echo(f"ERROR: {error}")
+        typer.echo("daily-review release-check: ERROR")
+        raise typer.Exit(code=1)
+    typer.echo("daily-review release-check: OK")
+    typer.echo("v1.0.0 is ready")
 
 
 @app.command()

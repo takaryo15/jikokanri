@@ -2,16 +2,17 @@
 
 ## Release checks
 
-- [ ] `pytest` passes.
-- [ ] `daily-review --help` works.
-- [ ] `daily-review --version` prints `daily-review 1.0.0`.
-- [ ] Run help for `backup`, `restore`, and `doctor`.
-- [ ] Run `daily-review doctor` against a real workspace.
-- [ ] Create a backup with `daily-review backup`.
-- [ ] Inspect it with `daily-review restore path/to/backup.zip --dry-run`.
-- [ ] Check `daily-review weekly` and `daily-review monthly`.
-- [ ] Read README commands against `daily-review --help`.
-- [ ] Confirm `git status` is clean.
+- [x] Full `pytest` suite passes (141 tests).
+- [x] `daily-review --help` and `daily-review --version` work.
+- [x] `daily-review home`, `summary`, `start`, `doctor`, and `release-check` work.
+- [x] Initial-use, night-review, approval, result-recording, carryover, weekly/monthly, and backup/restore workflows are covered by tests.
+- [x] Root auto-detection works from the repository root and project directory.
+- [x] Invalid dates and broken JSON are covered without normal traceback output.
+- [x] `git diff --check` passes.
+- [x] `data/`, `logs/`, `backups/`, and ZIP archives are ignored by Git; previously tracked generated reports are staged for untracking without deleting local files.
+- [x] README and CHANGELOG have been updated for v1.0.0.
+- [x] Editable install verification passed in a temporary virtual environment.
+- [ ] Confirm the final staged/unstaged `git status` before commit.
 - [ ] Create the `v1.0.0` Git tag after approval.
 - [ ] Create the GitHub Release after approval.
 
