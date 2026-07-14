@@ -1,28 +1,26 @@
-# v1.1.0rc1 Release Checklist
+# v1.1.0 Release Checklist
 
 ## Release checks
 
-- [ ] Full `pytest` suite passes.
-- [ ] `daily-review migrate --yes` succeeds on a v1.0-style workspace.
-- [ ] `daily-review v11-check` succeeds.
-- [ ] `daily-review doctor` succeeds.
-- [ ] `daily-review release-check` succeeds.
-- [ ] `scripts/smoke_v11.py` succeeds in a temporary root.
-- [ ] Natural-input, handoff, and interrupted-resume E2E flows succeed.
-- [ ] Duplicate receive and approved-daily overwrite are rejected.
-- [ ] Runtime data and `config/priorities.json` are not tracked by Git.
-- [ ] README and CHANGELOG are updated.
-- [ ] Version is `1.1.0rc1`.
-- [ ] Confirm the final staged/unstaged `git status` before commit.
-- [ ] Create and push the annotated `v1.1.0rc1` tag after verification.
+- [x] Full `pytest` suite passes twice.
+- [x] Three-day operational flow, interrupted resume, and ChatGPT handoff E2E pass.
+- [x] Local-date midnight boundary, 05:00 handoff expiry, and Tuesday-to-Monday week boundary pass.
+- [x] `daily-review migrate --yes` preserves v1.0-style data and is idempotent.
+- [x] Clipboard failure exits safely with a file-input alternative.
+- [x] Duplicate receive and approved-daily overwrite are rejected.
+- [x] `daily-review doctor`, `release-check`, and `v11-check` pass.
+- [x] `scripts/smoke_v11.py` passes in a temporary root.
+- [x] Runtime data and `config/priorities.json` are not tracked by Git.
+- [x] README and CHANGELOG are updated.
+- [x] Version is `1.1.0`.
 
 ## GitHub Release draft
 
-### daily-review v1.1.0rc1
+### daily-review v1.1.0
 
 - Natural language input, review drafts, and explicit approval.
 - Safe ChatGPT handoff/receive packages with session and prompt-hash checks.
 - v1.0-to-v1.1 migration, operational checks, and safe backup/restore.
 - No external AI API, automatic approval, or automatic plan changes.
 
-This checklist prepares the release only. It does not create a Git tag or publish a GitHub Release.
+The annotated `v1.1.0` tag is created only after this checklist and the final clean-tree check pass.

@@ -690,7 +690,7 @@ def v11_check(
             typer.echo("daily-review v11-check: ERROR")
         else:
             typer.echo("daily-review v11-check: OK")
-            typer.echo("v1.1.0rc1 is ready for operational testing")
+            typer.echo("v1.1.0 is ready")
     if report["errors"]:
         raise typer.Exit(code=5)
 
@@ -1283,9 +1283,18 @@ def chat(
     )
 
 
-def _handoff_error(message: str, *, day: str | None = None, code: int = 2) -> None:
+def _handoff_error(
+    message: str,
+    *,
+    day: str | None = None,
+    code: int = 2,
+    next_command: str | None = None,
+) -> None:
     typer.echo(f"ERROR: {message}", err=True)
-    if day:
+    if next_command:
+        typer.echo("次の操作:", err=True)
+        typer.echo(next_command, err=True)
+    elif day:
         typer.echo("次の操作:", err=True)
         typer.echo(f"daily-review handoff --date {day}", err=True)
     raise typer.Exit(code=code)
@@ -1419,9 +1428,14 @@ def receive(
             allow_expired=allow_expired,
             force=force,
         )
-    except (ChatSchemaError, HandoffError, ValueError) as exc:
+    except (ChatSchemaError, HandoffError, ValueError, typer.BadParameter) as exc:
         day_hint = requested_day
-        _handoff_error(str(exc), day=day_hint, code=3)
+        _handoff_error(
+            str(exc),
+            day=day_hint,
+            code=3,
+            next_command="daily-review receive --file response.json" if clipboard else None,
+        )
         return
     except OSError as exc:
         _handoff_error(f"回答を読み込めません: {exc}", day=requested_day, code=4)
@@ -2749,13 +2763,13 @@ def doctor(root: Path | None = RootOption) -> None:
 
 @app.command("release-check")
 def release_check(root: Path | None = RootOption) -> None:
-    """v1.1.0rc1 リリースに必要な静的条件を読み取り専用で確認します。"""
+    """v1.1.0 リリースに必要な静的条件を読み取り専用で確認します。"""
     del root  # A release check validates the package, not user-owned runtime data.
     source_root = repository_root()
     errors: list[str] = []
     installed_version = _metadata_version()
-    if __version__ != "1.1.0rc1":
-        errors.append(f"アプリのバージョンが1.1.0rc1ではありません: {__version__}")
+    if __version__ != "1.1.0":
+        errors.append(f"アプリのバージョンが1.1.0ではありません: {__version__}")
     if installed_version != __version__:
         errors.append("package metadataのバージョンを取得できないか一致しません")
     command_names = {
@@ -2813,7 +2827,7 @@ def release_check(root: Path | None = RootOption) -> None:
     typer.echo("OK   clipboard workflow")
     typer.echo("OK   migration definition")
     typer.echo("OK   runtime data ignored by git")
-    typer.echo("v1.1.0rc1 is ready")
+    typer.echo("v1.1.0 is ready")
 
 
 @app.command()

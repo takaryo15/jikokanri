@@ -11,10 +11,10 @@ runner = CliRunner()
 
 
 def test_release_candidate_version_release_check_and_runtime_git_exclusions(tmp_path):
-    assert runner.invoke(app, ["--version"]).output.strip() == "daily-review 1.1.0rc1"
+    assert runner.invoke(app, ["--version"]).output.strip() == "daily-review 1.1.0"
     release = runner.invoke(app, ["release-check", "--root", str(tmp_path)])
     assert release.exit_code == 0, release.output
-    assert "v1.1.0rc1 is ready" in release.output
+    assert "v1.1.0 is ready" in release.output
 
     assert runner.invoke(app, ["init", "--root", str(tmp_path)]).exit_code == 0
     assert runner.invoke(app, ["migrate", "--root", str(tmp_path), "--yes"]).exit_code == 0

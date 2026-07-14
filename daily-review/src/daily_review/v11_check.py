@@ -49,7 +49,7 @@ def _priorities_are_valid(path: Path) -> bool:
 def collect_v11_checks(root: Path) -> dict[str, Any]:
     """Collect deterministic v1.1 checks without changing the workspace."""
     checks: list[dict[str, str]] = []
-    checks.append(_check("package version 1.1.0rc1", __version__ == "1.1.0rc1", f"package version: {__version__}"))
+    checks.append(_check("package version 1.1.0", __version__ == "1.1.0", f"package version: {__version__}"))
     for relative in REQUIRED_DIRECTORIES:
         checks.append(_check(relative, (root / relative).is_dir(), f"必要なディレクトリがありません: {relative}"))
 
@@ -100,7 +100,7 @@ def collect_v11_checks(root: Path) -> dict[str, Any]:
 
     for name, path, needle in (
         ("README v1.1 usage", source_root / "README.md", "daily-review migrate"),
-        ("CHANGELOG Unreleased", source_root / "CHANGELOG.md", "1.1.0rc1"),
+        ("CHANGELOG 1.1.0", source_root / "CHANGELOG.md", "1.1.0 - 2026-07-14"),
         ("release checklist", source_root / "RELEASE_CHECKLIST.md", "v1.1"),
     ):
         try:

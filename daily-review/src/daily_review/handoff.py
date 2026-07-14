@@ -107,12 +107,14 @@ def find_handoff(root: Path, day: str, session_id: str) -> tuple[dict[str, Any],
     raise HandoffError("一致するhandoffが見つかりません")
 
 
-def is_expired(item: dict[str, Any]) -> bool:
+def is_expired(item: dict[str, Any], *, now: datetime | None = None) -> bool:
+    """Return whether a handoff reached its expiry instant (inclusive)."""
     value = item.get("expires_at")
     if not isinstance(value, str):
         raise HandoffError("handoffのexpires_atがありません")
     try:
-        return datetime.now(ZoneInfo("Asia/Tokyo")) > datetime.fromisoformat(value)
+        current = now or datetime.now(ZoneInfo("Asia/Tokyo"))
+        return current >= datetime.fromisoformat(value)
     except ValueError as exc:
         raise HandoffError("handoffのexpires_atが不正です") from exc
 

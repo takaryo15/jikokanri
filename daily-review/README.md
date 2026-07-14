@@ -1,6 +1,6 @@
 # daily-review
 
-`daily-review` は、毎日の振り返り、翌日の指示書、実行結果をローカルのJSONとMarkdownに残すPython CLIです。v1.1.0rc1では、自然文入力からChatGPTとの安全な受け渡し、明示的な承認までをローカルで扱います。
+`daily-review` は、毎日の振り返り、翌日の指示書、実行結果をローカルのJSONとMarkdownに残すPython CLIです。v1.1.0では、自然文入力からChatGPTとの安全な受け渡し、明示的な承認までをローカルで扱います。
 
 ## v1でできること
 
@@ -316,7 +316,7 @@ daily-review doctor
 
 ## release-check
 
-`release-check` はv1.1.0rc1のバージョン、package metadata、主要コマンド、テンプレート、スキーマ、ドキュメント、Git除外、migration定義を読み取り専用で確認します。実ユーザーデータが0件でも成功します。
+`release-check` はv1.1.0のバージョン、package metadata、主要コマンド、テンプレート、スキーマ、ドキュメント、Git除外、migration定義を読み取り専用で確認します。実ユーザーデータが0件でも成功します。
 
 ```bash
 daily-review release-check
