@@ -5,6 +5,7 @@ import platform
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timedelta
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Any
@@ -16,11 +17,10 @@ from . import __version__
 from .archive import create_backup, restore_backup
 from .date_utils import month_range_for, parse_date, today_string, tomorrow_of, week_range_for
 from .markdown import render_daily, render_monthly, render_weekly
-from .models import DailyEntry, Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
+from .models import Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
 from .storage import (
     atomic_write_json_many,
     atomic_write_json_data,
-    atomic_write_json_data_many,
     daily_path,
     daily_log_path,
     draft_path,
@@ -41,9 +41,9 @@ from .validation import ValidationResult, validate_daily, validate_plan
 from .weekly import build_weekly_summary
 from .reporting import build_report, weekly_trends
 from .doctor import run_doctor
-from .dashboard import build_daily_summary, next_action_kind, next_command
-from .organizer import EDITABLE_DRAFT_FIELDS, load_draft, organize_day
-from .draft_workflow import backup_daily_before_reapproval, build_daily_from_draft, replace_draft_fields
+from .dashboard import build_daily_summary, home_next_command, next_action_kind, next_command
+from .organizer import EDITABLE_DRAFT_FIELDS, load_draft, organize_day, organize_entries
+from .draft_workflow import approve_draft, build_daily_from_draft, replace_draft_fields
 
 
 app = typer.Typer(
@@ -608,7 +608,6 @@ def input_text(
         return
     if not raw_text.strip():
         _input_error("入力内容が空です")
-    path = inbox_path(base, day)
     if dry_run:
         typer.echo("daily-review input｜dry-run")
         typer.echo(f"日付: {day}")
@@ -617,35 +616,42 @@ def input_text(
         typer.echo("保存は行いませんでした")
         return
     try:
+        path, entry_id = _store_natural_input(base, day, raw_text, source)
+    except ValueError as exc:
+        typer.echo(f"ERROR: inboxを保存できません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    except OSError as exc:
+        typer.echo(f"ERROR: inboxを保存できません: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+    typer.echo("入力を保存しました")
+    typer.echo(f"日付: {day}")
+    typer.echo(f"入力ID: {entry_id}")
+    typer.echo(f"保存先: {path.relative_to(base)}")
+
+
+def _store_natural_input(root: Path, day: str, raw_text: str, source: str) -> tuple[Path, str]:
+    """Append one raw input with the same atomic semantics as ``input``."""
+    path = inbox_path(root, day)
+    try:
         payload = read_json_file(path) if path.exists() else {"date": day, "entries": []}
     except (OSError, ValueError) as exc:
-        typer.echo(f"ERROR: inbox JSONを読み込めません: {exc}", err=True)
-        raise typer.Exit(code=3) from exc
+        raise ValueError(f"inbox JSONを読み込めません: {exc}") from exc
     if not isinstance(payload, dict) or payload.get("date") not in (None, day):
-        typer.echo("ERROR: inbox JSONの日付が不正です", err=True)
-        raise typer.Exit(code=3)
+        raise ValueError("inbox JSONの日付が不正です")
     entries = payload.get("entries")
     if entries is None:
         entries = []
         payload["entries"] = entries
     if not isinstance(entries, list):
-        typer.echo("ERROR: inbox JSONのentriesが不正です", err=True)
-        raise typer.Exit(code=3)
+        raise ValueError("inbox JSONのentriesが不正です")
     known_ids = {str(entry.get("id")) for entry in entries if isinstance(entry, dict) and entry.get("id")}
     entry_id = f"{day.replace('-', '')}-{uuid.uuid4().hex[:6]}"
     while entry_id in known_ids:
         entry_id = f"{day.replace('-', '')}-{uuid.uuid4().hex[:6]}"
     payload["date"] = day
     entries.append({"id": entry_id, "created_at": now_iso(), "source": source, "raw_text": raw_text})
-    try:
-        atomic_write_json_data(path, payload)
-    except OSError as exc:
-        typer.echo(f"ERROR: inboxを保存できません: {path} ({exc})", err=True)
-        raise typer.Exit(code=4) from exc
-    typer.echo("入力を保存しました")
-    typer.echo(f"日付: {day}")
-    typer.echo(f"入力ID: {entry_id}")
-    typer.echo(f"保存先: {path.relative_to(base)}")
+    atomic_write_json_data(path, payload)
+    return path, entry_id
 
 
 def _print_organize_result(result: dict[str, Any], base: Path, day: str, *, dry_run: bool) -> None:
@@ -880,38 +886,278 @@ def approve(
             typer.echo("承認をキャンセルしました")
             return
     try:
-        current_entry = load_daily(base, day) or {}
-        daily_entry = build_daily_from_draft(current_entry, day, draft)
-        stamped_daily = _stamp_entry_for_write(day, daily_entry)
-        DailyEntry.model_validate(stamped_daily)
-    except (OSError, ValueError, ValidationError) as exc:
+        result = approve_draft(base, day, draft, force=force)
+    except ValueError as exc:
         typer.echo(f"ERROR: ドラフトを日次データへ変換できません: {exc}", err=True)
         raise typer.Exit(code=3) from exc
-
-    backup_path: Path | None = None
-    if force and draft.get("status") == "approved":
-        try:
-            backup_path = backup_daily_before_reapproval(base, day)
-        except OSError as exc:
-            typer.echo(f"ERROR: 再承認前バックアップを作成できません: {exc}", err=True)
-            raise typer.Exit(code=4) from exc
-    draft["status"] = "approved"
-    draft["approved_at"] = now_iso()
-    draft["approved_daily_path"] = str(daily_path(base, day).relative_to(base))
-    draft["updated_at"] = now_iso()
-    try:
-        atomic_write_json_data_many(
-            [(daily_path(base, day), stamped_daily), (draft_path(base, day), draft)]
-        )
-        markdown_path = _regenerate_daily_markdown(base, day, stamped_daily)
     except OSError as exc:
         typer.echo(f"ERROR: 承認内容を保存できません: {exc}", err=True)
         raise typer.Exit(code=4) from exc
     typer.echo(f"ドラフトを承認しました｜{day}")
     typer.echo(f"確定先: {draft['approved_daily_path']}")
-    typer.echo(f"Markdownを更新しました: {markdown_path}")
-    if backup_path:
-        typer.echo(f"再承認前バックアップ: {backup_path.relative_to(base)}")
+    typer.echo(f"Markdownを更新しました: {result['markdown_path']}")
+    if result["backup_path"]:
+        typer.echo(f"再承認前バックアップ: {result['backup_path'].relative_to(base)}")
+
+
+def _reflect_json(
+    *,
+    day: str,
+    draft: dict[str, Any] | None,
+    input_saved: bool,
+    input_id: str | None,
+    approved: bool,
+    daily_file: Path | None,
+    dry_run: bool,
+) -> None:
+    typer.echo(json.dumps({
+        "date": day,
+        "status": (draft or {}).get("status", "draft"),
+        "input_saved": input_saved,
+        "input_id": input_id,
+        "draft_path": f"data/drafts/{day}.json" if draft else None,
+        "approved": approved,
+        "daily_path": str(daily_file.relative_to(daily_file.parents[2])) if daily_file else None,
+        "dry_run": dry_run,
+        "draft": draft,
+    }, ensure_ascii=False, indent=2))
+
+
+def _reflect_error(message: str, *, json_output: bool, code: int = 2) -> None:
+    if json_output:
+        typer.echo(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+    else:
+        typer.echo(f"ERROR: {message}", err=True)
+    raise typer.Exit(code=code)
+
+
+def _recent_duplicate_input(root: Path, day: str, raw_text: str) -> bool:
+    path = inbox_path(root, day)
+    if not path.exists():
+        return False
+    try:
+        payload = read_json_file(path)
+        entries = payload.get("entries") if isinstance(payload, dict) else None
+        if not isinstance(entries, list):
+            return False
+        now = datetime.fromisoformat(now_iso())
+        for entry in reversed(entries):
+            if not isinstance(entry, dict) or entry.get("raw_text") != raw_text:
+                continue
+            created_at = entry.get("created_at")
+            if not isinstance(created_at, str):
+                continue
+            if now - datetime.fromisoformat(created_at) <= timedelta(minutes=5):
+                return True
+    except (OSError, ValueError):
+        return False
+    return False
+
+
+def _auto_approval_reason(root: Path, day: str, draft: dict[str, Any]) -> str | None:
+    if draft.get("status") != "draft":
+        return "承認済みまたは不正なドラフトです"
+    if draft.get("unclassified"):
+        return f"未分類の文章が{len(draft['unclassified'])}件あります"
+    for field in ("today.main_candidates", "tomorrow.main_candidates"):
+        group, key = field.split(".", 1)
+        values = (draft.get(group) or {}).get(key)
+        if not isinstance(values, list):
+            return f"{field}が不正です"
+        if len(values) > 3:
+            return f"{field}が最大3件を超えています"
+        if not values:
+            label = "今日のMain候補" if group == "today" else "明日のMain候補"
+            return f"{label}がありません"
+    if daily_path(root, day).exists():
+        return "既存の日次データがあります"
+    try:
+        build_daily_from_draft({}, day, draft)
+    except ValueError as exc:
+        return str(exc)
+    return None
+
+
+def _reflect_approved_message(day: str, result: dict[str, Path | None]) -> None:
+    typer.echo("振り返りを確定しました")
+    typer.echo(f"日付: {day}")
+    typer.echo(f"保存先: {result['daily_path'].relative_to(result['daily_path'].parents[2])}")
+
+
+def _reflect_interactive(base: Path, day: str, draft: dict[str, Any]) -> bool:
+    """Review/edit/approval loop.  Returns whether daily data was saved."""
+    for _ in range(20):
+        typer.echo("この内容を確定しますか？")
+        typer.echo("[y] 承認して確定  [e] ドラフトを編集  [n] 保存せず終了")
+        choice = typer.prompt("選択", default="n").strip().lower()
+        if choice == "y":
+            try:
+                result = approve_draft(base, day, draft)
+            except (OSError, ValueError) as exc:
+                typer.echo(f"ERROR: 承認内容を保存できません: {exc}", err=True)
+                return False
+            _reflect_approved_message(day, result)
+            return True
+        if choice == "n":
+            typer.echo("確定せず終了しました")
+            typer.echo("ドラフトは保存されています")
+            typer.echo(f"再開: daily-review reflect --date {day} --resume")
+            return False
+        if choice == "e":
+            edit_draft(date=day, set_values=[], force=False, root=base)
+            draft = _draft_or_error(base, day)
+            typer.echo("編集後の内容を表示します")
+            _print_draft_review(draft, day)
+            continue
+        typer.echo("y、e、nのいずれかを入力してください")
+    typer.echo("ERROR: 編集・確認の回数が上限に達しました。--resumeで再開してください", err=True)
+    return False
+
+
+@app.command("reflect")
+def reflect(
+    date: str | None = DateOption,
+    text: str | None = typer.Option(None, "--text", help="保存する自然文"),
+    clipboard: bool = typer.Option(False, "--clipboard", help="macOSのクリップボードから読み込む"),
+    resume: bool = typer.Option(False, "--resume", help="既存の未承認ドラフトから再開する"),
+    yes: bool = typer.Option(False, "--yes", help="安全条件を満たす場合のみ確認なしで承認する"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="保存せずに入力と整理結果だけを確認する"),
+    json_output: bool = typer.Option(False, "--json", help="結果をJSONだけで出力する"),
+    root: Path | None = RootOption,
+) -> None:
+    """自然文入力から整理・確認・承認までを一つの流れで進めます。"""
+    base = _root(root)
+    day = _day(date)
+    if resume:
+        if text is not None or clipboard:
+            _reflect_error("--resume と --text/--clipboard は同時に使用できません", json_output=json_output)
+        try:
+            draft = load_draft(base, day)
+        except (OSError, ValueError) as exc:
+            _reflect_error(f"整理ドラフトを読み込めません: {exc}", json_output=json_output, code=3)
+            return
+        if not draft:
+            _reflect_error("再開できるドラフトがありません\n先に daily-review reflect または daily-review organize を実行してください", json_output=json_output)
+            return
+        if draft.get("status") == "approved":
+            if json_output:
+                _reflect_json(day=day, draft=draft, input_saved=False, input_id=None, approved=True, daily_file=daily_path(base, day), dry_run=dry_run)
+            else:
+                typer.echo("この日の振り返りはすでに確定済みです")
+                typer.echo(f"daily-review summary --date {day}")
+            return
+        if dry_run:
+            if json_output:
+                _reflect_json(day=day, draft=draft, input_saved=False, input_id=None, approved=False, daily_file=None, dry_run=True)
+            else:
+                typer.echo(f"daily-review reflect｜dry-run｜{day}")
+                _print_draft_review(draft, day)
+                typer.echo("保存は行いませんでした")
+            return
+        if yes:
+            reason = _auto_approval_reason(base, day, draft)
+            if reason:
+                _reflect_error(f"自動承認できません\n理由: {reason}\ndaily-review reflect --date {day} --resume", json_output=json_output)
+            try:
+                result = approve_draft(base, day, draft)
+            except (OSError, ValueError) as exc:
+                _reflect_error(f"承認内容を保存できません: {exc}", json_output=json_output, code=3)
+            if json_output:
+                _reflect_json(day=day, draft=draft, input_saved=False, input_id=None, approved=True, daily_file=result["daily_path"], dry_run=False)
+            else:
+                _reflect_approved_message(day, result)
+            return
+        if json_output:
+            _reflect_json(day=day, draft=draft, input_saved=False, input_id=None, approved=False, daily_file=None, dry_run=False)
+            return
+        _print_draft_review(draft, day)
+        _reflect_interactive(base, day, draft)
+        return
+
+    try:
+        existing_draft = load_draft(base, day)
+    except (OSError, ValueError) as exc:
+        _reflect_error(f"整理ドラフトを読み込めません: {exc}", json_output=json_output, code=3)
+        return
+    if existing_draft:
+        if existing_draft.get("status") == "approved":
+            _reflect_error("この日はすでに確定済みです。修正する場合は既存の編集・再承認フローを使用してください", json_output=json_output)
+        _reflect_error(f"既存ドラフトがあります\ndaily-review reflect --date {day} --resume", json_output=json_output)
+    if daily_path(base, day).exists():
+        _reflect_error("既存の日次データがあります。安全のため自動上書きしません", json_output=json_output)
+
+    try:
+        raw_text, source = _read_natural_input(text, clipboard)
+    except typer.BadParameter as exc:
+        _reflect_error(str(exc), json_output=json_output)
+        return
+    if not raw_text.strip():
+        _reflect_error("入力内容が空です", json_output=json_output)
+    virtual_entry = {"id": f"dry-run-{day.replace('-', '')}", "created_at": now_iso(), "source": source, "raw_text": raw_text}
+    if dry_run:
+        try:
+            result = organize_entries(day, [virtual_entry])
+        except ValueError as exc:
+            _reflect_error(f"整理できません: {exc}", json_output=json_output, code=3)
+            return
+        draft = result["draft"]
+        if json_output:
+            _reflect_json(day=day, draft=draft, input_saved=False, input_id=None, approved=False, daily_file=None, dry_run=True)
+        else:
+            typer.echo("daily-review reflect｜dry-run")
+            typer.echo(f"日付: {day}")
+            _print_draft_review(draft, day)
+            typer.echo("保存は行いませんでした")
+        return
+
+    if _recent_duplicate_input(base, day, raw_text):
+        if yes or json_output or _stdin_is_piped():
+            _reflect_error("同じ内容が直前に保存されています", json_output=json_output)
+        if not typer.confirm("同じ内容が直前に保存されています。もう一度保存しますか？", default=False):
+            typer.echo("確定せず終了しました")
+            return
+    try:
+        _, input_id = _store_natural_input(base, day, raw_text, source)
+        result = organize_day(base, day)
+        atomic_write_json_data(result["path"], result["draft"])
+    except (OSError, ValueError, LookupError) as exc:
+        _reflect_error(
+            f"入力は保存されていますが整理できません: {exc}\ndaily-review reflect --date {day} --resume",
+            json_output=json_output,
+            code=3,
+        )
+        return
+    draft = result["draft"]
+    if yes:
+        reason = _auto_approval_reason(base, day, draft)
+        if reason:
+            _reflect_error(f"自動承認できません\n理由: {reason}\ndaily-review reflect --date {day} --resume", json_output=json_output)
+        try:
+            approval = approve_draft(base, day, draft)
+        except (OSError, ValueError) as exc:
+            _reflect_error(f"承認内容を保存できません: {exc}", json_output=json_output, code=3)
+        if json_output:
+            _reflect_json(day=day, draft=draft, input_saved=True, input_id=input_id, approved=True, daily_file=approval["daily_path"], dry_run=False)
+        else:
+            typer.echo(f"daily-review reflect｜{day}")
+            typer.echo("入力を保存しました")
+            typer.echo(f"入力ID: {input_id}")
+            _reflect_approved_message(day, approval)
+        return
+    if json_output:
+        _reflect_json(day=day, draft=draft, input_saved=True, input_id=input_id, approved=False, daily_file=None, dry_run=False)
+        return
+    typer.echo(f"daily-review reflect｜{day}")
+    typer.echo("入力を保存しました")
+    typer.echo(f"入力ID: {input_id}")
+    typer.echo("内容を整理しました")
+    _print_draft_review(draft, day)
+    if _stdin_is_piped():
+        typer.echo("確定せず終了しました")
+        typer.echo("ドラフトは保存されています")
+        typer.echo(f"再開: daily-review reflect --date {day} --resume")
+        return
+    _reflect_interactive(base, day, draft)
 
 
 @app.command("save-raw")
@@ -1364,7 +1610,7 @@ def _print_next_action(base: Path, day: str, *, include_date: bool = False) -> N
     typer.echo(f"daily-review close-day{date_option} --clipboard --dry-run")
 
 
-def _print_summary(summary: dict[str, Any], *, title: str = "状況") -> None:
+def _print_summary(summary: dict[str, Any], *, title: str = "状況", next_override: str | None = None) -> None:
     today_final = summary["today_final"]
     results = summary["task_results"]
     proposal = summary["tomorrow_proposal"]
@@ -1392,7 +1638,7 @@ def _print_summary(summary: dict[str, Any], *, title: str = "状況") -> None:
     else:
         draft_label = "未承認"
     typer.echo(f"整理ドラフト: {draft_label}")
-    typer.echo(f"次の操作: {next_command(summary)}")
+    typer.echo(f"次の操作: {next_override or next_command(summary)}")
 
 
 @app.command()
@@ -1417,7 +1663,7 @@ def home(
     """毎日最初に見る、計画・未完了・次の操作の統合画面です。"""
     base = _root(root)
     report = build_daily_summary(base, _day(date))
-    _print_summary(report, title="daily-review home")
+    _print_summary(report, title="daily-review home", next_override=home_next_command(report))
     typer.echo("未完了タスク:")
     if report["incomplete_tasks"]:
         for index, item in enumerate(report["incomplete_tasks"], start=1):
@@ -1437,6 +1683,7 @@ def home(
         typer.echo(f"明日のMain候補: {len(tomorrow_candidates)}件")
         if report.get("draft_status") == "approved":
             typer.echo("確定日次: 作成済み")
+            typer.echo("今日の振り返り: 完了")
     doctor_report = run_doctor(base)
     errors = [item for item in doctor_report["issues"] if item["level"] == "ERROR"]
     if errors:

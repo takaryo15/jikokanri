@@ -35,7 +35,7 @@ daily-review organize --date 2026-07-14 --dry-run
 daily-review organize --date 2026-07-14 --json
 ```
 
-同じ入力を再度整理しても書き換えず、新しいinbox入力がある場合だけドラフトへ追記します。全入力から作り直したい場合だけ `--force` を使います。ドラフトの候補を既存の確定データへ反映する操作は、後続フェーズでユーザー確認を前提に追加予定です。
+同じ入力を再度整理しても書き換えず、新しいinbox入力がある場合だけドラフトへ追記します。全入力から作り直したい場合だけ `--force` を使います。候補を日次データへ反映するには、`approve` または `reflect` でユーザー承認が必要です。
 
 ### ドラフトを確認・修正・承認する
 
@@ -52,6 +52,22 @@ daily-review approve --date 2026-07-14 --yes
 `--set` を同じフィールドへ複数回指定すると、その指定順の配列で置換します。空文字で空配列に置換できます。編集できるのは候補・振り返り・日記・未分類だけで、入力原文、作成日時、承認状態は編集できません。承認済みドラフトは通常編集不可です。`edit-draft --force` はドラフトを未承認へ戻しますが、既存の日次データを削除しません。
 
 承認済みドラフトを `approve --force --yes` で再承認する場合は、先に `data/backups/daily/` へ日次JSONのバックアップを作成します。ドラフトはルールベースの候補であり、判断できない文章は未分類のまま残ります。後続フェーズではユーザー確認を前提に、より詳細な取り込みを追加予定です。
+
+### 振り返りを一度に行う
+
+`reflect` は、自然文入力、inboxへの原文保存、ルールベース整理、ドラフト確認、承認までを一つの流れで行う入口です。個別の `input`、`organize`、`review`、`edit-draft`、`approve` も引き続き利用できます。
+
+```bash
+daily-review reflect
+daily-review reflect --text "今日は院試を2問進めた。明日は研究を進める。"
+daily-review reflect --clipboard
+daily-review reflect --resume
+daily-review reflect --text "今日は院試を2問進めた。明日は研究を進める。" --yes
+```
+
+通常は内容を表示してから `y`（承認）、`e`（編集）、`n`（確定せず終了）を選びます。原文は必ずinboxへ残り、`n` や途中の失敗で日次データは作成されません。中断後は `--resume` で未承認ドラフトから再開できます。
+
+`--yes` は確認を省略しますが、未分類、今日または明日のMain候補不足、候補数超過、既存日次データ、承認済みドラフトなどの安全条件に当てはまる場合は承認せずエラーにします。`--dry-run` は入力・整理結果だけを表示して一切保存せず、`--json` は機械処理向けのJSONだけを標準出力へ出力します。
 
 ## 設計思想
 
@@ -124,6 +140,7 @@ daily-review approve-plan
 | `review` | 整理ドラフトを確認表示 |
 | `edit-draft` | 許可済みのドラフト配列を置換編集 |
 | `approve` | 確認済みドラフトを日次記録と翌日提案へ保存 |
+| `reflect` | 入力から整理・確認・承認までをまとめて進める入口 |
 
 `start`、`summary`、`home` は保存状態を読むだけで変更しません。指定日の確認には `daily-review start --date YYYY-MM-DD` または `daily-review summary --date YYYY-MM-DD` を使えます。
 
@@ -244,6 +261,8 @@ backups/
 ## トラブルシューティング
 
 - 自然文を整理する: `daily-review organize --date YYYY-MM-DD --dry-run`
+- 振り返りを一度に進める: `daily-review reflect --date YYYY-MM-DD`
+- 中断したドラフトを再開する: `daily-review reflect --date YYYY-MM-DD --resume`
 - 整理ドラフトを確認する: `daily-review review --date YYYY-MM-DD`
 - ドラフトを承認する: `daily-review approve --date YYYY-MM-DD --yes`
 - 保存状態を確認する: `daily-review status --date YYYY-MM-DD`

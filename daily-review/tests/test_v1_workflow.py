@@ -23,7 +23,8 @@ def test_v1_first_use_night_approval_and_results_workflow(tmp_path):
     for command in ("home", "summary", "start"):
         result = runner.invoke(app, [command, "--date", "2026-07-14", "--root", str(tmp_path)])
         assert result.exit_code == 0
-        assert "close-day" in result.output
+        expected = "daily-review reflect" if command == "home" else "close-day"
+        assert expected in result.output
 
     raw = tmp_path / "raw.txt"
     raw.write_text("生ログをそのまま残す", encoding="utf-8")

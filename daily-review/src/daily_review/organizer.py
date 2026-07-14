@@ -283,14 +283,16 @@ def _classification_counts(entries: list[dict[str, Any]], draft: dict[str, Any])
     return len(sentences) - unclassified_count, unclassified_count
 
 
-def organize_day(root: Path, day: str, *, force: bool = False) -> dict[str, Any]:
-    """Build an append-only organization draft.  This function never writes."""
-    entries = _load_inbox_entries(root, day)
+def organize_entries(
+    day: str,
+    entries: list[dict[str, Any]],
+    *,
+    existing: dict[str, Any] | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Build a draft from supplied entries without writing any file."""
     if not entries:
         raise LookupError(f"{day}の入力がありません")
-
-    path = draft_path(root, day)
-    existing = load_draft(root, day)
 
     if force or existing is None:
         # Unknown fields are retained when explicitly rebuilding an existing draft.
@@ -319,7 +321,6 @@ def organize_day(root: Path, day: str, *, force: bool = False) -> dict[str, Any]
                 "new_entry_count": 0,
                 "classified_count": classified_count,
                 "unclassified_count": unclassified_count,
-                "path": path,
             }
 
     _classify_entries(new_entries, draft)
@@ -345,5 +346,12 @@ def organize_day(root: Path, day: str, *, force: bool = False) -> dict[str, Any]
         "new_entry_count": len(new_entries),
         "classified_count": classified_count,
         "unclassified_count": unclassified_count,
-        "path": path,
     }
+
+
+def organize_day(root: Path, day: str, *, force: bool = False) -> dict[str, Any]:
+    """Build an append-only organization draft.  This function never writes."""
+    entries = _load_inbox_entries(root, day)
+    result = organize_entries(day, entries, existing=load_draft(root, day), force=force)
+    result["path"] = draft_path(root, day)
+    return result

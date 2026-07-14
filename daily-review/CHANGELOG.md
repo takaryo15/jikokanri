@@ -12,6 +12,9 @@
 - 整理ドラフトを確認する`daily-review review`、編集する`daily-review edit-draft`、承認する`daily-review approve`.
 - ドラフトの承認状態、revision、編集履歴、および承認済みドラフトから既存日次データへの互換的な保存.
 - 再承認前の日次JSONバックアップ.
+- 自然文入力から承認までを一括実行する`daily-review reflect`.
+- 未承認ドラフトから再開する`reflect --resume`、安全条件付きの自動承認`reflect --yes`、統合フローのJSON出力.
+- 中断・失敗後の復旧案内、および状態に応じたhomeの次操作表示.
 
 ### Safety
 

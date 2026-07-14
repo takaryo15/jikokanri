@@ -124,6 +124,14 @@ def next_command(summary: dict[str, Any]) -> str:
         return f"daily-review today --date {day}"
     if kind == "organize":
         return f"daily-review organize --date {day}"
-    if kind == "draft_review":
-        return f"daily-review review --date {day}"
     return f"daily-review close-day --date {day} --clipboard --dry-run"
+
+
+def home_next_command(summary: dict[str, Any]) -> str:
+    """Use the v1.1 integrated flow only on the daily home screen."""
+    day = summary["date"]
+    if not summary.get("draft") and not summary.get("inbox_entry_count"):
+        return f"daily-review reflect --date {day}"
+    if summary.get("draft") and summary.get("draft_status") != "approved":
+        return f"daily-review reflect --date {day} --resume"
+    return next_command(summary)

@@ -7,9 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from .date_utils import tomorrow_of
-from .models import now_iso
+from .markdown import render_daily
+from .models import DailyEntry, now_iso
 from .organizer import EDITABLE_DRAFT_FIELDS, add_draft_revision
-from .storage import daily_path
+from .storage import atomic_write_json_data_many, daily_log_path, daily_path, load_daily, write_text
 from .validation import validate_plan
 
 
@@ -178,3 +179,27 @@ def backup_daily_before_reapproval(root: Path, day: str) -> Path | None:
         destination = destination.with_name(destination.stem + "_1" + destination.suffix)
     shutil.copy2(source, destination)
     return destination
+
+
+def approve_draft(root: Path, day: str, draft: dict[str, Any], *, force: bool = False) -> dict[str, Path | None]:
+    """Atomically save an approved draft and its daily-record counterpart."""
+    current_entry = load_daily(root, day) or {}
+    daily_entry = build_daily_from_draft(current_entry, day, draft)
+    timestamp = now_iso()
+    daily_entry["date"] = day
+    daily_entry["updated_at"] = timestamp
+    daily_entry.setdefault("created_at", timestamp)
+    DailyEntry.model_validate(daily_entry)
+
+    backup_path: Path | None = None
+    if force and draft.get("status") == "approved":
+        backup_path = backup_daily_before_reapproval(root, day)
+    daily_file = daily_path(root, day)
+    draft["status"] = "approved"
+    draft["approved_at"] = now_iso()
+    draft["approved_daily_path"] = str(daily_file.relative_to(root))
+    draft["updated_at"] = now_iso()
+    draft_file = root / "data" / "drafts" / f"{day}.json"
+    atomic_write_json_data_many([(daily_file, daily_entry), (draft_file, draft)])
+    markdown_path = write_text(daily_log_path(root, day), render_daily(daily_entry))
+    return {"daily_path": daily_file, "draft_path": draft_file, "markdown_path": markdown_path, "backup_path": backup_path}
