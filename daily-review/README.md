@@ -56,20 +56,20 @@ daily-review today --date 2026-07-14 --show-ids
 夜:
 
 1. ChatGPTへ夜の振り返りを送る
-2. ChatGPTが `task_results.json` と `night.json` を出力する
-3. 当日のタスク結果を保存する
-4. 夜の振り返りと明日の提案版を保存する
+2. ChatGPTが1つの `night.json` を出力する
+3. `close-day --dry-run` で保存前確認をする
+4. `close-day` で当日の結果、振り返り、翌日提案を一括保存する
 5. 提案版を確認する
 6. OKなら `approve-plan` で承認する
 7. 翌朝に `today` で確認する
 
 ```bash
 daily-review today --date 2026-07-14 --show-ids
-daily-review record-results --date 2026-07-14 --file task_results.json
-daily-review save-night --date 2026-07-14 --file night.json
+daily-review close-day --date 2026-07-14 --file night.json --dry-run
+daily-review close-day --date 2026-07-14 --file night.json
 daily-review show-proposal --date 2026-07-14
 daily-review approve-plan --date 2026-07-14
-daily-review today --date 2026-07-14
+daily-review today
 ```
 
 未完了確認:
@@ -85,13 +85,13 @@ daily-review carryover --date 2026-07-14
 日付を明示したい場合:
 
 ```bash
-daily-review save-night --date 2026-07-13 --file night.json
+daily-review close-day --date 2026-07-14 --file night.json
 ```
 
-`save-night` は `--file` を省略すると標準入力から貼り付けできます。入力後は `Ctrl-D` で保存します。
+`close-day` は `--file` を省略すると標準入力から貼り付けできます。入力後は `Ctrl-D` で保存します。
 
 ```bash
-cat night.json | daily-review save-night --date 2026-07-13
+cat night.json | daily-review close-day --date 2026-07-14
 ```
 
 保存後は、日次JSONとMarkdownの保存先、次に実行するコマンドが表示されます。保存内容をざっと確認したいときは次を使います。
@@ -103,7 +103,9 @@ daily-review list --limit 7
 
 日次Markdownは `logs/YYYY-MM-DD.md` に作成されます。生ログ、日記、今日のMain、最低ライン、崩れた原因、提案版、確定版を1ファイルで見返せます。
 
-`save-night` は安全性のため、`task_results` の同時保存はしません。タスク結果は `record-results` で先に保存してください。
+`close-day` は当日のタスク結果、夜の振り返り、翌日の提案版をまとめて保存します。翌日の提案版は未承認のままで、確定版は `approve-plan` を実行したときだけ作られます。
+
+`save-night` は詳細・トラブル対応用として残しています。`save-night` は生ログ、日記、整形ログ、翌日提案のみを保存し、タスク結果は保存しません。
 
 ## 個別に保存する場合
 
@@ -152,19 +154,27 @@ daily-review weekly --date 2026-07-13
 
 ## JSON入力例
 
-`night.json`:
+`close-day` 用 `night.json`:
 
 ```json
 {
-  "date": "2026-07-13",
-  "raw_log": "今日は研究室に行った。院試は少しだけ進めた。",
-  "diary": "少し疲れていたが、完全に何もしない日にはならなかった。",
+  "date": "2026-07-14",
+  "raw_log": "今日は院試の過去問を大問1つ解いた。研究はRGS1だけ確認した。",
+  "diary": "少し疲れていたが、院試を進められたのはよかった。",
+  "task_results": [
+    {
+      "task_id": "task-1",
+      "status": "completed",
+      "note": "大問1を最後まで解いた",
+      "minimum_line_achieved": true
+    }
+  ],
   "structured_review": {
     "today_main": [
       {
         "area": "院試",
-        "status": "一部進んだ",
-        "note": "過去問の問題文を確認した"
+        "status": "完了",
+        "note": "過去問の大問1を解いた"
       }
     ],
     "minimum_line": {
@@ -175,23 +185,22 @@ daily-review weekly --date 2026-07-13
     "one_change_tomorrow": "朝イチで過去問を開く"
   },
   "tomorrow_plan_proposal": {
-    "target_date": "2026-07-14",
+    "target_date": "2026-07-15",
     "main": ["院試", "研究", "筋トレ・健康"],
     "tasks": [
       {
         "area": "院試",
-        "task": "過去問を大問1つ解く",
+        "task": "過去問の次の大問を1つ解く",
         "priority": 1,
         "minimum_line": "問題文を開く"
       }
     ],
-    "one_change_tomorrow": "朝イチで過去問を開く"
-  },
-  "task_results": []
+    "one_change_tomorrow": "帰宅前に過去問を開く"
+  }
 }
 ```
 
-`task_results.json`:
+`record-results` 用 `task_results.json`:
 
 ```json
 {
@@ -260,6 +269,7 @@ daily-review weekly --date 2026-07-13
 
 ```text
 daily-review init
+daily-review close-day --date YYYY-MM-DD [--file night.json] [--dry-run]
 daily-review save-night --date YYYY-MM-DD [--file night.json]
 daily-review save-raw --date YYYY-MM-DD [--file raw.txt]
 daily-review save-review --date YYYY-MM-DD [--file review.json]

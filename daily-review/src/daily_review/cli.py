@@ -12,6 +12,8 @@ from .date_utils import parse_date, today_string, tomorrow_of, week_range_for
 from .markdown import render_daily, render_weekly
 from .models import Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
 from .storage import (
+    atomic_write_json_many,
+    daily_path,
     daily_log_path,
     init_workspace,
     load_daily,
@@ -283,6 +285,145 @@ def _merge_task_results(existing: list[dict[str, Any]], updates: list[dict[str, 
     return list(merged.values())
 
 
+def _stamp_entry_for_write(day: str, entry: dict[str, Any]) -> dict[str, Any]:
+    stamped = dict(entry)
+    timestamp = now_iso()
+    stamped["date"] = day
+    stamped["updated_at"] = timestamp
+    stamped.setdefault("created_at", timestamp)
+    return stamped
+
+
+def _validate_night_review_payload(payload: dict[str, Any]) -> tuple[str, ReviewInput]:
+    raw_log = payload.get("raw_log")
+    if not isinstance(raw_log, str) or not raw_log.strip():
+        raise typer.BadParameter("raw_logは空でない文字列にしてください。")
+    if payload.get("structured_review") is None:
+        raise typer.BadParameter("structured_reviewがありません。")
+    try:
+        review_input = ReviewInput.normalize_payload(
+            {
+                "diary": payload.get("diary"),
+                "structured_review": payload.get("structured_review"),
+            }
+        )
+    except ValidationError as exc:
+        raise typer.BadParameter(_format_validation_error(exc)) from exc
+    if review_input.structured_review is None:
+        raise typer.BadParameter("structured_reviewがありません。")
+    return raw_log, review_input
+
+
+def _prepare_close_day(
+    root: Path,
+    day: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[str], int, str | None]:
+    warnings: list[str] = []
+    raw_log, review_input = _validate_night_review_payload(payload)
+    proposal_payload = payload.get("tomorrow_plan_proposal")
+    if proposal_payload is None:
+        raise typer.BadParameter("tomorrow_plan_proposalがありません。")
+    if not isinstance(proposal_payload, dict):
+        raise typer.BadParameter("tomorrow_plan_proposalはJSONオブジェクトにしてください。")
+    plan_payload, plan_result = _build_pending_plan(proposal_payload, day)
+    if plan_result.has_errors:
+        _print_validation(plan_result)
+        raise typer.Exit(code=1)
+    warnings.extend(plan_result.warnings)
+
+    entries_by_day: dict[str, dict[str, Any]] = {}
+    saved_result_count = 0
+    result_source_day: str | None = None
+    has_task_results = "task_results" in payload
+    raw_task_results = payload.get("task_results")
+    if has_task_results and raw_task_results:
+        source_day, source_entry, source_plan = _find_final_entry_by_target(root, day)
+        if not source_entry or not source_plan or not source_day:
+            if _has_pending_by_target(root, day):
+                raise typer.BadParameter(f"{day} は提案版のみです。承認後にclose-dayを実行してください。")
+            raise typer.BadParameter(f"{day} を対象にした確定版指示書がありません。")
+        _ensure_task_ids(source_plan)
+        updates = _parse_task_results({"task_results": raw_task_results})
+        errors, result_warnings = _validate_task_results_payload(updates, source_plan)
+        if errors:
+            for error in errors:
+                typer.echo(f"エラー: {error}", err=True)
+            raise typer.Exit(code=1)
+        warnings.extend(result_warnings)
+        source_entry["tomorrow_plan_final"] = source_plan
+        source_entry["task_results"] = _merge_task_results(source_entry.get("task_results") or [], updates)
+        entries_by_day[source_day] = source_entry
+        saved_result_count = len(updates)
+        result_source_day = source_day
+    elif has_task_results:
+        warnings.append("当日のタスク結果は保存されませんでした（task_resultsが空です）。")
+    else:
+        warnings.append("当日のタスク結果は保存されていません。")
+
+    current_entry = entries_by_day.get(day) or load_or_create_daily(root, day)
+    current_entry["raw_log"] = raw_log
+    if review_input.diary is not None:
+        current_entry["diary"] = review_input.diary
+    current_entry["structured_review"] = dump_model(review_input.structured_review)
+    current_entry["tomorrow_plan_proposal"] = plan_payload
+    entries_by_day[day] = current_entry
+    return entries_by_day, warnings, saved_result_count, result_source_day
+
+
+def _print_close_day_dry_run(
+    root: Path,
+    day: str,
+    entries_by_day: dict[str, dict[str, Any]],
+    result_count: int,
+    warnings: list[str],
+) -> None:
+    typer.echo(f"保存前確認｜{day}")
+    typer.echo("更新予定")
+    for entry_day in sorted(entries_by_day):
+        path = daily_path(root, entry_day).relative_to(root)
+        typer.echo(f"- {path}")
+        if entry_day != day:
+            typer.echo(f"  タスク結果: {result_count}件")
+        else:
+            typer.echo("  生ログ・日記・整形ログ・翌日提案")
+    target = (entries_by_day[day].get("tomorrow_plan_proposal") or {}).get("target_date", "-")
+    typer.echo(f"翌日提案の対象日: {target}")
+    typer.echo("エラー: 0件")
+    typer.echo(f"警告: {len(warnings)}件")
+    for warning in warnings:
+        typer.echo(f"- {warning}")
+    typer.echo("dry-runのため保存していません。")
+
+
+def _print_close_day_summary(
+    day: str,
+    entry: dict[str, Any],
+    result_count: int,
+    carryover_count: int,
+    warnings: list[str],
+) -> None:
+    final = entry.get("tomorrow_plan_final")
+    typer.echo(f"夜の記録を保存しました｜{day}")
+    typer.echo(f"当日のタスク結果   {result_count}件保存")
+    typer.echo(f"生ログ             {_saved_label(entry.get('raw_log'))}")
+    typer.echo(f"日記               {_saved_label(entry.get('diary'))}")
+    typer.echo(f"整形ログ           {_saved_label(entry.get('structured_review'))}")
+    typer.echo(f"翌日の提案版       {_saved_label(entry.get('tomorrow_plan_proposal'))}")
+    typer.echo(f"翌日の確定版       {'承認済み' if final and final.get('status') == 'approved' else '未承認'}")
+    proposal = entry.get("tomorrow_plan_proposal") or {}
+    typer.echo(f"対象日             {proposal.get('target_date', '-')}")
+    typer.echo("次:")
+    typer.echo(f"daily-review show-proposal --date {day}")
+    if warnings:
+        typer.echo("警告")
+        for warning in warnings:
+            typer.echo(f"- {warning}")
+    if carryover_count:
+        typer.echo(f"引き継ぎ候補: {carryover_count}件")
+        typer.echo(f"daily-review carryover --date {day}")
+
+
 def _print_night_summary(day: str, entry: dict[str, Any], warnings: list[str]) -> None:
     final = entry.get("tomorrow_plan_final")
     typer.echo(f"夜の振り返りを保存しました｜{day}")
@@ -450,6 +591,45 @@ def save_night(
     save_daily(base, day, entry)
     _regenerate_daily_markdown(base, day, entry)
     _print_night_summary(day, entry, result.warnings)
+
+
+@app.command("close-day")
+def close_day(
+    date: str | None = DateOption,
+    file: Path | None = typer.Option(None, "--file", help="当日の結果・振り返り・翌日提案の一括JSON"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="検証と更新予定の表示だけ行い、保存しない"),
+    root: Path | None = RootOption,
+) -> None:
+    """当日の結果、夜の振り返り、翌日の提案版を安全に一括保存します。"""
+    base = _root(root)
+    payload = _read_json_from_file_or_stdin(file)
+    day = _resolve_night_date(date, payload)
+    entries_by_day, warnings, result_count, result_source_day = _prepare_close_day(base, day, payload)
+
+    if dry_run:
+        _print_close_day_dry_run(base, day, entries_by_day, result_count, warnings)
+        return
+
+    stamped_entries = {
+        entry_day: _stamp_entry_for_write(entry_day, entry)
+        for entry_day, entry in entries_by_day.items()
+    }
+    writes = [
+        (daily_path(base, entry_day), stamped_entries[entry_day])
+        for entry_day in sorted(stamped_entries)
+    ]
+    atomic_write_json_many(writes)
+    for entry_day, entry in stamped_entries.items():
+        _regenerate_daily_markdown(base, entry_day, entry)
+
+    carryover_count = 0
+    if result_source_day and result_source_day in stamped_entries:
+        carryover_count = sum(
+            1
+            for result in stamped_entries[result_source_day].get("task_results", [])
+            if result.get("status") in CARRYOVER_STATUSES
+        )
+    _print_close_day_summary(day, stamped_entries[day], result_count, carryover_count, warnings)
 
 
 @app.command("approve-plan")

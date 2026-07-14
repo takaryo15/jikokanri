@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -64,21 +65,27 @@ TEMPLATE_CONTENTS = {
 - 提案版は未承認状態
 - target_dateは振り返り日の翌日
 - 優先順位は院試、研究、筋トレ・健康、競馬AI、定期収入、松尾研、読書
-- 当日の確定版タスクIDが分かる場合だけrecord-results用JSONにtask_resultsを入れる
+- 当日の確定版タスクIDが分かる場合だけtask_resultsを入れる
 - CLIのtoday --show-idsまたは確定版に表示されたタスクIDだけを使う
 - 存在しないIDを推測で作らない
 - タスクIDが不明な場合はtask_resultsを空配列にする
-- save-night用night.jsonではtask_resultsは空配列にし、結果はrecord-results用JSONとして別に出力する
 - task_resultsのstatusはcompleted、partial、minimum_only、not_started、skippedだけを使う
 - minimum_line_achievedはtrueまたはfalseにする
-
-save-night用night.json:
+- close-dayへ渡す1つのJSONだけを出力する
 
 ```json
 {
   "date": "YYYY-MM-DD",
   "raw_log": "ユーザーの元文章を改変せずに入れる",
   "diary": "日記として残す短い文章",
+  "task_results": [
+    {
+      "task_id": "task-1",
+      "status": "completed",
+      "note": "大問1を最後まで解いた",
+      "minimum_line_achieved": true
+    }
+  ],
   "structured_review": {
     "today_main": [
       {
@@ -115,23 +122,7 @@ save-night用night.json:
       }
     ],
     "one_change_tomorrow": "朝イチで過去問を開く"
-  },
-  "task_results": []
-}
-```
-
-record-results用JSON:
-
-```json
-{
-  "task_results": [
-    {
-      "task_id": "task-1",
-      "status": "completed",
-      "note": "大問1を最後まで解いた",
-      "minimum_line_achieved": true
-    }
-  ]
+  }
 }
 ```
 """,
@@ -230,6 +221,57 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     finally:
         if tmp_path.exists():
             tmp_path.unlink()
+
+
+def atomic_write_json_many(writes: list[tuple[Path, dict[str, Any]]]) -> list[Path]:
+    prepared: list[tuple[Path, Path, bool, Path | None]] = []
+    replaced: list[tuple[Path, bool, Path | None]] = []
+    try:
+        for path, payload in writes:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            DailyEntry.model_validate(payload)
+            serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False)
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{path.name}.",
+                suffix=".tmp",
+                dir=str(path.parent),
+                text=True,
+            )
+            tmp_path = Path(tmp_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(serialized)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            backup_path: Path | None = None
+            if path.exists():
+                backup_fd, backup_name = tempfile.mkstemp(
+                    prefix=f".{path.name}.",
+                    suffix=".bak",
+                    dir=str(path.parent),
+                )
+                os.close(backup_fd)
+                backup_path = Path(backup_name)
+                shutil.copy2(path, backup_path)
+            prepared.append((path, tmp_path, path.exists(), backup_path))
+
+        for path, tmp_path, existed, backup_path in prepared:
+            os.replace(tmp_path, path)
+            replaced.append((path, existed, backup_path))
+    except Exception:
+        for path, existed, backup_path in reversed(replaced):
+            if existed and backup_path and backup_path.exists():
+                os.replace(backup_path, path)
+            elif not existed and path.exists():
+                path.unlink()
+        raise
+    finally:
+        for _, tmp_path, _, backup_path in prepared:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            if backup_path and backup_path.exists():
+                backup_path.unlink()
+    return [path for path, _ in writes]
 
 
 def save_daily(root: Path, day: str, payload: dict[str, Any]) -> Path:
