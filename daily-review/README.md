@@ -43,6 +43,22 @@ daily-review goal archive goal-xxxxxxxx --yes
 
 `--qualitative`には「説明できる」のように達成を判断できる文章を指定します。`--metric`は`name|unit|baseline|target|direction`形式で、`increase`、`decrease`、`maintain`、`boolean`を指定できます。定性・定量指標から進捗を自動計算し、指標がない場合だけ`--manual-progress`を使えます。親目標には存在する未アーカイブ目標だけを指定でき、自己参照・循環参照・不自然な上位方向のlevel関係は拒否されます。
 
+### v1.2開発中: マイルストーンと実行ロードマップ
+
+目標は、期限・依存関係・実行ステップを持つマイルストーンへ分解できます。マイルストーンやステップの変更前には、目標JSON全体を`data/backups/goals/`へ退避します。削除は行わず、不要な項目は`cancelled`に変更してください。
+
+```bash
+daily-review goal milestone add goal-xxxxxxxx --title "過去問5年分を1周する" --due-date 2026-07-31
+daily-review goal milestone step add goal-xxxxxxxx mile-xxxxxxxx --title "2025年度の過去問を解く" --minimum "問題文を読み、解法方針だけ書く"
+daily-review goal milestone step status goal-xxxxxxxx mile-xxxxxxxx step-xxxxxxxx doing
+daily-review goal roadmap goal-xxxxxxxx
+daily-review goal next goal-xxxxxxxx
+```
+
+`goal roadmap`は目標・マイルストーン・ステップの現在地を表示し、`goal next`は完了済み依存関係、期限、順序を考慮して次に進める1項目を選びます。`doing`のステップが優先されます。期限の整合性に関する警告を伴う追加・編集では、対話確認か非対話用の`--allow-warning`が必要です。
+
+マイルストーン同士は`daily-review goal milestone edit ... --depends-on mile-xxxxxxxx`、同じマイルストーン内のステップ同士は`daily-review goal milestone step edit ... --depends-on step-xxxxxxxx`で依存を設定できます。自己参照、存在しないID、循環、別目標・別マイルストーンへの依存は保存前に拒否します。フェーズ1のマイルストーンを持たない目標は、書き換えず空のロードマップとして読み込みます。
+
 ### 毎晩の推奨操作: ChatGPT往復フロー
 
 毎晩は、handoffを作成してChatGPTへ貼り付け、回答をreceiveする流れを使います。外部APIには接続せず、コピー＆ペーストまたはクリップボードだけで往復します。handoffには対象日・一意なセッションID・プロンプトハッシュ・期限が含まれるため、古い回答や別日の回答を保存前に拒否できます。

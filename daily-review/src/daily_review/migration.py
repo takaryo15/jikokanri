@@ -17,6 +17,7 @@ from .storage import (
 
 MIGRATION_ID = "v1.1-base"
 GOALS_MIGRATION_ID = "v1.2-goals-base"
+ROADMAP_MIGRATION_ID = "v1.2-goal-roadmap"
 MIGRATION_HISTORY_PATH = Path("data/migrations.json")
 MIGRATION_DIRECTORIES = (
     Path("data/inbox"),
@@ -51,7 +52,7 @@ def load_migration_history(root: Path) -> dict[str, Any]:
 
 def is_migrated(root: Path) -> bool:
     applied = {item.get("id") for item in load_migration_history(root)["migrations"] if isinstance(item, dict)}
-    return {MIGRATION_ID, GOALS_MIGRATION_ID} <= applied
+    return {MIGRATION_ID, GOALS_MIGRATION_ID, ROADMAP_MIGRATION_ID} <= applied
 
 
 def migration_plan(root: Path) -> list[dict[str, str]]:
@@ -101,6 +102,10 @@ def apply_migration(root: Path) -> dict[str, Any]:
         new_records.append({"id": MIGRATION_ID, "from_version": "1.0.0"})
     if GOALS_MIGRATION_ID not in applied:
         new_records.append({"id": GOALS_MIGRATION_ID, "from_version": "1.1.0"})
+    # Roadmap fields are intentionally optional.  Recording this migration
+    # must never rewrite existing goal JSON just to add an empty list.
+    if ROADMAP_MIGRATION_ID not in applied:
+        new_records.append({"id": ROADMAP_MIGRATION_ID, "from_version": "1.1.0"})
     for record in new_records:
         history["migrations"].append({
             **record, "applied_at": now_iso(), "to_version": __version__, "changes": list(changes),

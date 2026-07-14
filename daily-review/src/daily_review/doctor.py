@@ -8,7 +8,7 @@ from . import __version__
 from .chat_schema import SCHEMA_VERSION
 from .date_utils import week_range_for
 from .handoff import HANDOFF_STATUSES, HANDOFF_VERSION, HandoffError, is_expired
-from .goals import GoalError, load_goals, validate_goal
+from .goals import GoalError, load_goals, milestones_of, validate_goal
 from .session import SESSION_STATUSES
 from .storage import (
     CHAT_IMPORT_PROMPT_NAME,
@@ -290,6 +290,15 @@ def run_doctor(root: Path) -> dict[str, Any]:
         checks.append("goals schema")
         checks.append("goal relationships")
         checks.append("goal metrics")
+        checks.append("goal milestones")
+        checks.append("milestone dependencies")
+        checks.append("goal steps")
+        for goal in goals:
+            for milestone in milestones_of(goal):
+                pending = [step for step in milestone.get("steps") or [] if step.get("status") not in {"done", "cancelled"}]
+                if milestone.get("status") == "completed" and pending:
+                    issues.append(_issue("WARN", f"goal {goal['id']}: completedマイルストーンに未完了ステップがあります"))
+        checks.append("roadmap consistency")
     if (root / "data" / "goals" / "items").is_dir():
         checks.append("goals directory")
 

@@ -55,9 +55,11 @@ from .dashboard import build_daily_summary, home_next_command, next_action_kind,
 from .organizer import EDITABLE_DRAFT_FIELDS, load_draft, organize_day, organize_entries
 from .draft_workflow import approve_draft, build_daily_from_draft, replace_draft_fields
 from .goals import (
-    GOAL_LEVELS, GOAL_STATUSES, GoalError, archive_goal, children_of, edit_goal,
-    goal_progress, goal_summary as build_goal_summary, load_goal, load_goals, new_goal,
-    save_goal, set_goal_status, validate_goal,
+    GOAL_LEVELS, GOAL_STATUSES, MILESTONE_STATUSES, STEP_STATUSES, GoalError, add_milestone,
+    add_step, archive_goal, children_of, edit_goal, find_milestone, find_step, goal_progress,
+    goal_summary as build_goal_summary, load_goal, load_goals, milestone_progress, milestone_warnings,
+    milestones_of, new_goal, new_milestone, new_step, next_goal_action, parse_metric, reorder_milestone, reorder_step,
+    save_goal, set_goal_status, step_warnings, update_milestone, update_step, validate_goal,
 )
 from .session import prompt_hash, save_session
 from .v11_check import collect_v11_checks, repository_root
@@ -69,7 +71,11 @@ app = typer.Typer(
     invoke_without_command=True,
 )
 goal_app = typer.Typer(help="定性・定量指標を持つ目標を安全に管理します。")
+milestone_app = typer.Typer(help="目標を期限付きマイルストーンへ分解します。")
+step_app = typer.Typer(help="マイルストーンの具体的な実行ステップを管理します。")
 app.add_typer(goal_app, name="goal")
+goal_app.add_typer(milestone_app, name="milestone")
+milestone_app.add_typer(step_app, name="step")
 
 
 @app.callback()
@@ -930,6 +936,344 @@ def goal_archive(
         _goal_error(str(exc), code=3)
     typer.echo("目標をアーカイブしました")
     typer.echo(f"ID: {archived['id']}")
+
+
+def _confirm_roadmap_warnings(warnings: list[str], *, allow_warning: bool) -> None:
+    if not warnings:
+        return
+    for warning in warnings:
+        typer.echo(f"WARNING: {warning}", err=True)
+    if not allow_warning and not typer.confirm("警告を確認して保存しますか？", default=False):
+        _goal_error("警告のため保存を中止しました。--allow-warningで保存できます")
+
+
+def _milestone_progress_label(milestone: dict[str, Any]) -> str:
+    progress, source = milestone_progress(milestone)
+    if progress is None:
+        return "未設定"
+    if source == "steps":
+        included = [step for step in milestone.get("steps") or [] if step.get("status") != "cancelled"]
+        done = sum(step.get("status") == "done" for step in included)
+        return f"{progress:g}%（ステップ{done}/{len(included)}）"
+    labels = {"indicators": "指標", "manual": "手動"}
+    return f"{progress:g}%（{labels.get(source, source)}）"
+
+
+def _print_milestone(milestone: dict[str, Any]) -> None:
+    typer.echo(milestone["title"])
+    typer.echo(f"ID: {milestone['id']}")
+    typer.echo(f"状態: {milestone['status']}")
+    typer.echo(f"期間: {milestone.get('start_date') or '未設定'}〜{milestone.get('due_date') or '未設定'}")
+    typer.echo(f"進捗: {_milestone_progress_label(milestone)}")
+    typer.echo(f"順番: {milestone['order']}")
+    typer.echo("定量指標:")
+    for item in milestone.get("quantitative_metrics") or []:
+        typer.echo(f"- {item['name']}: {item['current']} / {item['target']}{item['unit']}")
+    if not milestone.get("quantitative_metrics"):
+        typer.echo("なし")
+    labels = {"not_met": "未達", "partially_met": "一部達成", "met": "達成"}
+    typer.echo("定性指標:")
+    for item in milestone.get("qualitative_criteria") or []:
+        typer.echo(f"- [{labels[item['status']]}] {item['description']}")
+    if not milestone.get("qualitative_criteria"):
+        typer.echo("なし")
+    typer.echo("依存関係:")
+    typer.echo(", ".join(milestone.get("dependencies") or []) or "なし")
+    typer.echo("実行ステップ:")
+    for step in sorted(milestone.get("steps") or [], key=lambda item: item["order"]):
+        typer.echo(f"{step['order']}. [{step['status']}] {step['title']}")
+    if not milestone.get("steps"):
+        typer.echo("なし")
+
+
+@milestone_app.command("add")
+def milestone_add(
+    goal_id: str = typer.Argument(...),
+    title: str | None = typer.Option(None, "--title"),
+    description: str | None = typer.Option(None, "--description"),
+    start_date: str | None = typer.Option(None, "--start-date"),
+    due_date: str | None = typer.Option(None, "--due-date"),
+    qualitative: list[str] = typer.Option([], "--qualitative"),
+    metric_name: str | None = typer.Option(None, "--metric-name"),
+    metric_unit: str = typer.Option("", "--metric-unit"),
+    metric_baseline: float | None = typer.Option(None, "--metric-baseline"),
+    metric_target: float | None = typer.Option(None, "--metric-target"),
+    allow_warning: bool = typer.Option(False, "--allow-warning"),
+    root: Path | None = RootOption,
+) -> None:
+    """目標へマイルストーンを追加します。"""
+    if title is None:
+        title = typer.prompt("マイルストーンのタイトル")
+    base = _root(root)
+    try:
+        goal = load_goal(base, goal_id)
+        milestone = new_milestone(goal, title=title, description=description, start_date=start_date, due_date=due_date, qualitative=qualitative, metric_name=metric_name, metric_unit=metric_unit, metric_baseline=metric_baseline, metric_target=metric_target)
+        _confirm_roadmap_warnings(milestone_warnings(goal, milestone), allow_warning=allow_warning)
+        add_milestone(base, goal_id, milestone)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("マイルストーンを追加しました")
+    typer.echo(f"ID: {milestone['id']}")
+
+
+@milestone_app.command("list")
+def milestone_list(
+    goal_id: str = typer.Argument(...),
+    status: str | None = typer.Option(None, "--status"),
+    due_before: str | None = typer.Option(None, "--due-before"),
+    json_output: bool = typer.Option(False, "--json"),
+    root: Path | None = RootOption,
+) -> None:
+    """目標のマイルストーンを一覧表示します。"""
+    try:
+        if status is not None and status not in MILESTONE_STATUSES:
+            raise GoalError("マイルストーンstatusが不正です")
+        if due_before:
+            parse_date(due_before)
+        goal = load_goal(_root(root), goal_id)
+        milestones = sorted(milestones_of(goal), key=lambda item: item["order"])
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    if status:
+        milestones = [item for item in milestones if item.get("status") == status]
+    if due_before:
+        milestones = [item for item in milestones if item.get("due_date") and item["due_date"] <= due_before]
+    if json_output:
+        typer.echo(json.dumps({"goal_id": goal_id, "milestones": milestones}, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"マイルストーン｜{goal['title']}")
+    if not milestones:
+        typer.echo("なし")
+    for milestone in milestones:
+        typer.echo(f"{milestone['order']}. [{milestone['status']}] {milestone['title']}")
+        typer.echo(f"   期限: {milestone.get('due_date') or '未設定'}")
+        typer.echo(f"   進捗: {_milestone_progress_label(milestone)}")
+        done = sum(step.get("status") == "done" for step in milestone.get("steps") or [])
+        typer.echo(f"   ステップ: {done} / {len(milestone.get('steps') or [])}完了")
+
+
+@milestone_app.command("show")
+def milestone_show(
+    goal_id: str = typer.Argument(...), milestone_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"), root: Path | None = RootOption,
+) -> None:
+    """マイルストーンの詳細を表示します。"""
+    try:
+        milestone = find_milestone(load_goal(_root(root), goal_id), milestone_id)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    if json_output:
+        typer.echo(json.dumps(milestone, ensure_ascii=False, indent=2)); return
+    _print_milestone(milestone)
+
+
+@milestone_app.command("edit")
+def milestone_edit(
+    goal_id: str = typer.Argument(...), milestone_id: str = typer.Argument(...),
+    title: str | None = typer.Option(None, "--title"), description: str | None = typer.Option(None, "--description"),
+    start_date: str | None = typer.Option(None, "--start-date"), due_date: str | None = typer.Option(None, "--due-date"),
+    status: str | None = typer.Option(None, "--status"), manual_progress: float | None = typer.Option(None, "--manual-progress"),
+    qualitative: list[str] = typer.Option([], "--qualitative"), metric: list[str] = typer.Option([], "--metric"),
+    clear_qualitative: bool = typer.Option(False, "--clear-qualitative"), clear_metrics: bool = typer.Option(False, "--clear-metrics"),
+    depends_on: list[str] = typer.Option([], "--depends-on"), clear_dependencies: bool = typer.Option(False, "--clear-dependencies"),
+    allow_warning: bool = typer.Option(False, "--allow-warning"), root: Path | None = RootOption,
+) -> None:
+    """マイルストーンを編集します。"""
+    if depends_on and clear_dependencies:
+        _goal_error("--depends-on と --clear-dependencies は同時に使用できません")
+    if qualitative and clear_qualitative:
+        _goal_error("--qualitative と --clear-qualitative は同時に使用できません")
+    if metric and clear_metrics:
+        _goal_error("--metric と --clear-metrics は同時に使用できません")
+    base = _root(root)
+    try:
+        goal = load_goal(base, goal_id)
+        milestone = find_milestone(goal, milestone_id)
+        changes = {key: value for key, value in {"title": title, "description": description, "start_date": start_date, "due_date": due_date, "status": status}.items() if value is not None}
+        if status is not None and status not in MILESTONE_STATUSES:
+            raise GoalError("マイルストーンstatusが不正です")
+        if manual_progress is not None:
+            changes["progress"] = {"mode": "manual", "manual_value": manual_progress}
+        if qualitative:
+            changes["qualitative_criteria"] = [
+                {"id": f"qual-{uuid.uuid4().hex[:8]}", "description": value, "status": "not_met"}
+                for value in qualitative
+            ]
+        if clear_qualitative:
+            changes["qualitative_criteria"] = []
+        if metric:
+            changes["quantitative_metrics"] = [parse_metric(value) for value in metric]
+        if clear_metrics:
+            changes["quantitative_metrics"] = []
+        if depends_on:
+            changes["dependencies"] = depends_on
+        if clear_dependencies:
+            changes["dependencies"] = []
+        preview = dict(milestone); preview.update(changes)
+        _confirm_roadmap_warnings(milestone_warnings(goal, preview), allow_warning=allow_warning)
+        updated = update_milestone(base, goal_id, milestone_id, changes)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("マイルストーンを更新しました")
+    typer.echo(f"revision: {updated['revision']}")
+
+
+@milestone_app.command("status")
+def milestone_status(
+    goal_id: str = typer.Argument(...), milestone_id: str = typer.Argument(...), status: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes"), root: Path | None = RootOption,
+) -> None:
+    """マイルストーンの状態を変更します。"""
+    base = _root(root)
+    try:
+        goal = load_goal(base, goal_id); milestone = find_milestone(goal, milestone_id)
+        if status not in MILESTONE_STATUSES:
+            raise GoalError("マイルストーンstatusが不正です")
+        pending = [step for step in milestone.get("steps") or [] if step.get("status") not in {"done", "cancelled"}]
+        if status == "completed" and pending:
+            typer.echo(f"WARNING: 未完了ステップが{len(pending)}件あります", err=True)
+            if not yes and not typer.confirm("完了扱いにしますか？", default=False):
+                _goal_error("状態変更を中止しました")
+        changes: dict[str, Any] = {"status": status}
+        if status == "completed": changes["completed_at"] = milestone.get("completed_at") or now_iso()
+        elif milestone.get("completed_at") is not None: changes["completed_at"] = None
+        updated = update_milestone(base, goal_id, milestone_id, changes)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("マイルストーンの状態を更新しました")
+    typer.echo(f"状態: {updated['status']}")
+
+
+@milestone_app.command("reorder")
+def milestone_reorder(
+    goal_id: str = typer.Argument(...), milestone_id: str = typer.Argument(...),
+    before: str | None = typer.Option(None, "--before"), position: int | None = typer.Option(None, "--position"), root: Path | None = RootOption,
+) -> None:
+    """マイルストーンの順番を連番へ正規化して変更します。"""
+    try:
+        reorder_milestone(_root(root), goal_id, milestone_id, before_id=before, position=position)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("マイルストーンを並べ替えました")
+
+
+@step_app.command("add")
+def step_add(
+    goal_id: str = typer.Argument(...), milestone_id: str = typer.Argument(...), title: str | None = typer.Option(None, "--title"),
+    description: str | None = typer.Option(None, "--description"), start_date: str | None = typer.Option(None, "--start-date"), due_date: str | None = typer.Option(None, "--due-date"), minimum: str | None = typer.Option(None, "--minimum"),
+    allow_warning: bool = typer.Option(False, "--allow-warning"), root: Path | None = RootOption,
+) -> None:
+    """マイルストーンへ実行ステップを追加します。"""
+    if title is None: title = typer.prompt("ステップのタイトル")
+    base = _root(root)
+    try:
+        goal = load_goal(base, goal_id); milestone = find_milestone(goal, milestone_id)
+        step = new_step(title=title, description=description, start_date=start_date, due_date=due_date, minimum=minimum, order=len(milestone.get("steps") or []) + 1)
+        _confirm_roadmap_warnings(step_warnings(milestone, step), allow_warning=allow_warning)
+        add_step(base, goal_id, milestone_id, step)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("ステップを追加しました")
+    typer.echo(f"ID: {step['id']}")
+
+
+@step_app.command("list")
+def step_list(goal_id: str = typer.Argument(...), milestone_id: str = typer.Argument(...), json_output: bool = typer.Option(False, "--json"), root: Path | None = RootOption) -> None:
+    """ステップを一覧表示します。"""
+    try:
+        milestone = find_milestone(load_goal(_root(root), goal_id), milestone_id)
+        steps = sorted(milestone.get("steps") or [], key=lambda item: item["order"])
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    if json_output: typer.echo(json.dumps({"steps": steps}, ensure_ascii=False, indent=2)); return
+    typer.echo(f"ステップ｜{milestone['title']}")
+    for step in steps: typer.echo(f"{step['order']}. [{step['status']}] {step['title']}")
+    if not steps: typer.echo("なし")
+
+
+@step_app.command("edit")
+def step_edit(
+    goal_id: str = typer.Argument(...), milestone_id: str = typer.Argument(...), step_id: str = typer.Argument(...),
+    title: str | None = typer.Option(None, "--title"), description: str | None = typer.Option(None, "--description"), start_date: str | None = typer.Option(None, "--start-date"), due_date: str | None = typer.Option(None, "--due-date"), minimum: str | None = typer.Option(None, "--minimum"), depends_on: list[str] = typer.Option([], "--depends-on"), clear_dependencies: bool = typer.Option(False, "--clear-dependencies"), allow_warning: bool = typer.Option(False, "--allow-warning"), root: Path | None = RootOption,
+) -> None:
+    """ステップを編集します。"""
+    if depends_on and clear_dependencies: _goal_error("--depends-on と --clear-dependencies は同時に使用できません")
+    base = _root(root)
+    try:
+        goal = load_goal(base, goal_id); milestone, step = find_step(goal, milestone_id, step_id)
+        changes = {key: value for key, value in {"title": title, "description": description, "start_date": start_date, "due_date": due_date, "minimum": minimum}.items() if value is not None}
+        if depends_on: changes["dependencies"] = depends_on
+        if clear_dependencies: changes["dependencies"] = []
+        preview = dict(step); preview.update(changes)
+        _confirm_roadmap_warnings(step_warnings(milestone, preview), allow_warning=allow_warning)
+        updated = update_step(base, goal_id, milestone_id, step_id, changes)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("ステップを更新しました")
+    typer.echo(f"revision: {updated['revision']}")
+
+
+@step_app.command("status")
+def step_status(goal_id: str = typer.Argument(...), milestone_id: str = typer.Argument(...), step_id: str = typer.Argument(...), status: str = typer.Argument(...), root: Path | None = RootOption) -> None:
+    """ステップの状態を変更します。"""
+    if status not in STEP_STATUSES: _goal_error("ステップstatusが不正です")
+    try:
+        base = _root(root); _, step = find_step(load_goal(base, goal_id), milestone_id, step_id)
+        changes: dict[str, Any] = {"status": status}
+        if status == "done": changes["completed_at"] = step.get("completed_at") or now_iso()
+        elif step.get("completed_at") is not None: changes["completed_at"] = None
+        update_step(base, goal_id, milestone_id, step_id, changes)
+    except (GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("ステップの状態を更新しました")
+
+
+@step_app.command("reorder")
+def step_reorder(goal_id: str = typer.Argument(...), milestone_id: str = typer.Argument(...), step_id: str = typer.Argument(...), before: str | None = typer.Option(None, "--before"), position: int | None = typer.Option(None, "--position"), root: Path | None = RootOption) -> None:
+    """ステップを並べ替えます。"""
+    try: reorder_step(_root(root), goal_id, milestone_id, step_id, before_id=before, position=position)
+    except (GoalError, OSError, ValueError) as exc: _goal_error(str(exc), code=3)
+    typer.echo("ステップを並べ替えました")
+
+
+@goal_app.command("roadmap")
+def goal_roadmap(goal_id: str = typer.Argument(...), compact: bool = typer.Option(False, "--compact"), json_output: bool = typer.Option(False, "--json"), root: Path | None = RootOption) -> None:
+    """目標全体のマイルストーンとステップを時系列で表示します。"""
+    try: goal = load_goal(_root(root), goal_id); milestones = sorted(milestones_of(goal), key=lambda item: item["order"])
+    except (GoalError, OSError, ValueError) as exc: _goal_error(str(exc), code=3)
+    if json_output: typer.echo(json.dumps({"goal": goal, "milestones": milestones}, ensure_ascii=False, indent=2)); return
+    typer.echo(f"ロードマップ｜{goal['title']}")
+    typer.echo(f"期間: {goal.get('start_date') or '未設定'}〜{goal.get('due_date') or '未設定'}")
+    typer.echo(f"現在の進捗: {_goal_progress_label(goal)}")
+    for milestone in milestones:
+        due_label = milestone.get("due_date") or "期限未設定"
+        if milestone.get("due_date") and milestone["due_date"] < today_string() and milestone.get("status") not in {"completed", "cancelled"}:
+            due_label += "｜期限超過"
+        typer.echo(due_label)
+        typer.echo(f"├─ [{milestone['status']}] {milestone['title']}｜{_milestone_progress_label(milestone)}")
+        if not compact:
+            for step in sorted(milestone.get('steps') or [], key=lambda item: item['order']): typer.echo(f"│  ├─ [{step['status']}] {step['title']}")
+
+
+@goal_app.command("next")
+def goal_next(goal_id: str = typer.Argument(...), date: str | None = DateOption, root: Path | None = RootOption) -> None:
+    """依存関係と期限を考慮して次に進める項目を1つ表示します。"""
+    try:
+        goal = load_goal(_root(root), goal_id); action = next_goal_action(goal, today=_day(date))
+    except (GoalError, OSError, ValueError) as exc: _goal_error(str(exc), code=3)
+    if not action:
+        typer.echo("次に進められる項目はありません")
+        typer.echo("理由: すべての候補が依存関係でブロックされています")
+        return
+    milestone, step = action["milestone"], action["step"]
+    typer.echo(f"次に進める項目｜{goal['title']}")
+    typer.echo(f"マイルストーン: {milestone['title']}")
+    if step:
+        typer.echo(f"実行ステップ: {step['title']}")
+        typer.echo(f"期限: {step.get('due_date') or milestone.get('due_date') or '未設定'}")
+        typer.echo(f"最低ライン: {step.get('minimum') or '未設定'}")
+    else:
+        typer.echo("実行ステップ: 未分解")
 
 
 @app.command("input")
@@ -2803,6 +3147,18 @@ def home(
                 for goal in goals["near_due"]:
                     remaining = (parse_date(goal["due_date"]) - parse_date(report["date"])).days
                     typer.echo(f"- {goal['title']}｜残り{remaining}日")
+            next_actions: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            for goal in load_goals(base):
+                if goal.get("status") != "active":
+                    continue
+                action = next_goal_action(goal, today=report["date"])
+                if action:
+                    next_actions.append((goal, action))
+            if next_actions:
+                typer.echo("目標の次アクション:")
+                for goal, action in next_actions[:2]:
+                    item = action["step"] or action["milestone"]
+                    typer.echo(f"- {goal.get('category') or goal['title']}｜{item['title']}")
     doctor_report = run_doctor(base)
     errors = [item for item in doctor_report["issues"] if item["level"] == "ERROR"]
     if errors:
@@ -3041,7 +3397,7 @@ def release_check(root: Path | None = RootOption) -> None:
         errors.append("主要コマンドが登録されていません: " + ", ".join(missing_commands))
     from .chat_schema import SCHEMA_VERSION
     from .handoff import HANDOFF_VERSION
-    from .migration import MIGRATION_ID
+    from .migration import MIGRATION_ID, ROADMAP_MIGRATION_ID
     from .storage import REQUIRED_TEMPLATE_NAMES
 
     for name in REQUIRED_TEMPLATE_NAMES + (CHAT_IMPORT_PROMPT_NAME,):
@@ -3053,6 +3409,8 @@ def release_check(root: Path | None = RootOption) -> None:
         errors.append("handoff schemaのバージョンが不正です")
     if MIGRATION_ID != "v1.1-base":
         errors.append("v1.1 migration定義が不正です")
+    if ROADMAP_MIGRATION_ID != "v1.2-goal-roadmap":
+        errors.append("goal roadmap migration定義が不正です")
     if not (source_root / "src" / "daily_review" / "goals.py").is_file():
         errors.append("goal schemaまたはstorageがありません")
     if not (source_root / "config" / "priorities.example.json").is_file():
@@ -3087,6 +3445,10 @@ def release_check(root: Path | None = RootOption) -> None:
     typer.echo("OK   goal schema")
     typer.echo("OK   goal storage")
     typer.echo("OK   goal backup")
+    typer.echo("OK   milestone commands")
+    typer.echo("OK   roadmap command")
+    typer.echo("OK   dependency validation")
+    typer.echo("OK   next action selection")
     typer.echo("OK   runtime data ignored by git")
     typer.echo("v1.1.0 is ready")
 
