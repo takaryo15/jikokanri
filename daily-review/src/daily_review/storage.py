@@ -14,6 +14,7 @@ DATA_DIRS = [
     Path("data/daily"),
     Path("data/weekly"),
     Path("data/monthly"),
+    Path("data/inbox"),
     Path("logs"),
     Path("templates"),
 ]
@@ -208,6 +209,10 @@ def monthly_log_path(root: Path, month: str) -> Path:
     return root / "logs" / f"monthly_{month}.md"
 
 
+def inbox_path(root: Path, day: str) -> Path:
+    return root / "data" / "inbox" / f"{day}.json"
+
+
 def read_json_file(path: Path) -> dict[str, Any]:
     try:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -240,6 +245,29 @@ def load_or_create_daily(root: Path, day: str) -> dict[str, Any]:
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     DailyEntry.model_validate(payload)
+    serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=str(path.parent),
+        text=True,
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(serialized)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
+def atomic_write_json_data(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically write a non-daily JSON document without applying DailyEntry validation."""
+    path.parent.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False)
     fd, tmp_name = tempfile.mkstemp(
         prefix=f".{path.name}.",

@@ -4,6 +4,7 @@ import json
 import platform
 import subprocess
 import sys
+import uuid
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
 from typing import Any
@@ -18,9 +19,11 @@ from .markdown import render_daily, render_monthly, render_weekly
 from .models import Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
 from .storage import (
     atomic_write_json_many,
+    atomic_write_json_data,
     daily_path,
     daily_log_path,
     init_workspace,
+    inbox_path,
     load_daily,
     load_or_create_daily,
     read_json_file,
@@ -103,6 +106,35 @@ def _read_text_from_file_or_stdin(file: Path | None) -> str:
         return file.read_text(encoding="utf-8")
     typer.echo("入力を貼り付けてください。終わったら Ctrl-D で保存します。", err=True)
     return sys.stdin.read()
+
+
+def _stdin_is_piped() -> bool:
+    try:
+        return not sys.stdin.isatty()
+    except (AttributeError, OSError):
+        return False
+
+
+def _read_natural_input(text: str | None, clipboard: bool) -> tuple[str, str]:
+    if text is not None and clipboard:
+        raise typer.BadParameter("--text と --clipboard は同時に使用できません")
+    if text is not None:
+        if _stdin_is_piped() and sys.stdin.read():
+            raise typer.BadParameter("--text、--clipboard、標準入力は同時に使用できません")
+        return text, "text"
+    if clipboard:
+        if _stdin_is_piped() and sys.stdin.read():
+            raise typer.BadParameter("--text、--clipboard、標準入力は同時に使用できません")
+        return _read_clipboard_text(), "clipboard"
+    if _stdin_is_piped():
+        return sys.stdin.read(), "stdin"
+    typer.echo("入力を貼り付けてください。終わったら Ctrl-D で保存します。", err=True)
+    return sys.stdin.read(), "interactive"
+
+
+def _input_error(message: str) -> None:
+    typer.echo(f"ERROR: {message}", err=True)
+    raise typer.Exit(code=2)
 
 
 def _read_json_from_file_or_stdin(file: Path | None) -> dict[str, Any]:
@@ -552,6 +584,64 @@ def init(root: Path | None = RootOption) -> None:
     typer.echo("既存だったもの")
     for path in existing or ["なし"]:
         typer.echo(f"- {path}")
+
+
+@app.command("input")
+def input_text(
+    date: str | None = DateOption,
+    text: str | None = typer.Option(None, "--text", help="保存する自然文"),
+    clipboard: bool = typer.Option(False, "--clipboard", help="macOSのクリップボードから読み込む"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="保存せずに内容だけを表示する"),
+    root: Path | None = RootOption,
+) -> None:
+    """自然文の原文を日別inboxへ追記保存します。"""
+    base = _root(root)
+    day = _day(date)
+    try:
+        raw_text, source = _read_natural_input(text, clipboard)
+    except typer.BadParameter as exc:
+        _input_error(str(exc))
+        return
+    if not raw_text.strip():
+        _input_error("入力内容が空です")
+    path = inbox_path(base, day)
+    if dry_run:
+        typer.echo("daily-review input｜dry-run")
+        typer.echo(f"日付: {day}")
+        typer.echo(f"入力元: {source}")
+        typer.echo(raw_text)
+        typer.echo("保存は行いませんでした")
+        return
+    try:
+        payload = read_json_file(path) if path.exists() else {"date": day, "entries": []}
+    except (OSError, ValueError) as exc:
+        typer.echo(f"ERROR: inbox JSONを読み込めません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    if not isinstance(payload, dict) or payload.get("date") not in (None, day):
+        typer.echo("ERROR: inbox JSONの日付が不正です", err=True)
+        raise typer.Exit(code=3)
+    entries = payload.get("entries")
+    if entries is None:
+        entries = []
+        payload["entries"] = entries
+    if not isinstance(entries, list):
+        typer.echo("ERROR: inbox JSONのentriesが不正です", err=True)
+        raise typer.Exit(code=3)
+    known_ids = {str(entry.get("id")) for entry in entries if isinstance(entry, dict) and entry.get("id")}
+    entry_id = f"{day.replace('-', '')}-{uuid.uuid4().hex[:6]}"
+    while entry_id in known_ids:
+        entry_id = f"{day.replace('-', '')}-{uuid.uuid4().hex[:6]}"
+    payload["date"] = day
+    entries.append({"id": entry_id, "created_at": now_iso(), "source": source, "raw_text": raw_text})
+    try:
+        atomic_write_json_data(path, payload)
+    except OSError as exc:
+        typer.echo(f"ERROR: inboxを保存できません: {path} ({exc})", err=True)
+        raise typer.Exit(code=4) from exc
+    typer.echo("入力を保存しました")
+    typer.echo(f"日付: {day}")
+    typer.echo(f"入力ID: {entry_id}")
+    typer.echo(f"保存先: {path.relative_to(base)}")
 
 
 @app.command("save-raw")

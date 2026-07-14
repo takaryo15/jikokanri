@@ -11,6 +11,19 @@
 - 読み取り専用の `doctor` と `release-check`
 - SHA-256 manifest付きのバックアップと安全な復元
 
+## v1.1 開発中: 自然文入力
+
+`input` は、ChatGPT上で書いた自然文の原文を日別inboxへ安全に追記保存するv1.1開発中の入口です。この段階では文章を自動分類せず、日次レビュー、Main、タスク結果、明日の計画へ自動反映しません。
+
+```bash
+daily-review input --text "今日は院試を2問進めた"
+daily-review input --clipboard
+daily-review input --date 2026-07-14
+echo "今日は院試を2問進めた" | daily-review input
+```
+
+入力は `data/inbox/YYYY-MM-DD.json` に原文のまま追記されます。確認だけしたい場合は `--dry-run` を使います。
+
 ## 設計思想
 
 - 生ログは加工せず保存します。
@@ -172,6 +185,7 @@ daily-review release-check
 data/daily/YYYY-MM-DD.json
 data/weekly/YYYY-MM-DD_YYYY-MM-DD.json
 data/monthly/YYYY-MM.json
+data/inbox/YYYY-MM-DD.json
 logs/YYYY-MM-DD.md
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
 logs/monthly_YYYY-MM.md

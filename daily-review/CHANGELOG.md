@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Natural-language raw-text storage through `daily-review input`.
+- Per-day raw input inboxes in `data/inbox`.
+
 ## 1.0.0 - 2026-07-14
 
 ### Added
