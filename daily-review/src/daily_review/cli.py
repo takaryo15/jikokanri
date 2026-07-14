@@ -15,12 +15,17 @@ from pydantic import ValidationError
 
 from . import __version__
 from .archive import create_backup, restore_backup
+from .chat_import import backup_unapproved_draft, build_draft as build_chat_import_draft, import_hash
+from .chat_schema import ChatSchemaError, extract_json as extract_chat_json, validate_payload as validate_chat_payload
+from .chat_workflow import build_dynamic_prompt, chat_home_next_command, load_priorities, workflow_state
 from .date_utils import month_range_for, parse_date, today_string, tomorrow_of, week_range_for
 from .markdown import render_daily, render_monthly, render_weekly
 from .models import Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
 from .storage import (
     atomic_write_json_many,
     atomic_write_json_data,
+    CHAT_IMPORT_PROMPT_NAME,
+    DEFAULT_PRIORITIES,
     daily_path,
     daily_log_path,
     draft_path,
@@ -44,6 +49,7 @@ from .doctor import run_doctor
 from .dashboard import build_daily_summary, home_next_command, next_action_kind, next_command
 from .organizer import EDITABLE_DRAFT_FIELDS, load_draft, organize_day, organize_entries
 from .draft_workflow import approve_draft, build_daily_from_draft, replace_draft_fields
+from .session import prompt_hash, save_session
 
 
 app = typer.Typer(
@@ -652,6 +658,530 @@ def _store_natural_input(root: Path, day: str, raw_text: str, source: str) -> tu
     entries.append({"id": entry_id, "created_at": now_iso(), "source": source, "raw_text": raw_text})
     atomic_write_json_data(path, payload)
     return path, entry_id
+
+
+def _read_chat_import_input(
+    *,
+    json_text: str | None,
+    file: Path | None,
+    clipboard: bool,
+) -> tuple[str, str]:
+    """Select exactly one ChatGPT import source, including piped stdin."""
+    explicit_count = sum((json_text is not None, file is not None, clipboard))
+    piped = _stdin_is_piped()
+    piped_text = sys.stdin.read() if explicit_count and piped else None
+    if explicit_count > 1 or (explicit_count and piped_text):
+        raise ValueError("--json-text、--file、--clipboard、標準入力は同時に使用できません")
+    if json_text is not None:
+        return json_text, "json_text"
+    if file is not None:
+        try:
+            return file.read_text(encoding="utf-8"), "file"
+        except OSError as exc:
+            raise OSError(f"入力ファイルを読み込めません: {exc}") from exc
+    if clipboard:
+        return _read_clipboard_text(), "clipboard"
+    if piped:
+        stdin_text = sys.stdin.read()
+        if stdin_text:
+            return stdin_text, "stdin"
+    raise ValueError("ChatGPT連携用JSONを指定してください")
+
+
+def _chat_import_error(message: str, *, output_json: bool, code: int = 2) -> None:
+    if output_json:
+        typer.echo(json.dumps({"ok": False, "error": message}, ensure_ascii=False))
+    else:
+        typer.echo(f"ERROR: {message}", err=True)
+    raise typer.Exit(code=code)
+
+
+def _chat_auto_approval_reason(root: Path, day: str, draft: dict[str, Any], warnings: list[str]) -> str | None:
+    if warnings:
+        return "未知フィールドの警告があります"
+    return _auto_approval_reason(root, day, draft)
+
+
+def _chat_import_json_result(
+    *,
+    day: str,
+    source: str,
+    draft: dict[str, Any],
+    input_id: str | None,
+    input_saved: bool,
+    approved: bool,
+    dry_run: bool,
+    warnings: list[str],
+    backup_path: Path | None = None,
+    root: Path | None = None,
+) -> None:
+    typer.echo(json.dumps({
+        "ok": True,
+        "date": day,
+        "schema_version": "1.0",
+        "source": source,
+        "input_saved": input_saved,
+        "input_id": input_id,
+        "draft_saved": input_saved,
+        "draft_path": f"data/drafts/{day}.json",
+        "approved": approved,
+        "dry_run": dry_run,
+        "warnings": warnings,
+        "backup_path": str(backup_path.relative_to(root)) if backup_path and root else None,
+        "errors": [],
+        "draft": draft,
+    }, ensure_ascii=False, indent=2))
+
+
+def _print_chat_import_result(
+    *,
+    base: Path,
+    day: str,
+    input_id: str | None,
+    draft: dict[str, Any],
+    source: str,
+    warnings: list[str],
+    dry_run: bool,
+    backup_path: Path | None,
+) -> None:
+    typer.echo("daily-review chat-import｜dry-run" if dry_run else "ChatGPTの構造化入力を取り込みました")
+    typer.echo(f"日付: {day}")
+    typer.echo(f"入力元: {source}")
+    if input_id:
+        typer.echo(f"入力ID: {input_id}")
+    typer.echo(f"保存先: {draft_path(base, day).relative_to(base)}")
+    if backup_path:
+        typer.echo(f"置換前ドラフトのバックアップ: {backup_path.relative_to(base)}")
+    _print_draft_review(draft, day)
+    for warning in warnings:
+        typer.echo(f"WARN: {warning}")
+    if dry_run:
+        typer.echo("保存は行いませんでした")
+    else:
+        typer.echo(f"確認・承認: daily-review reflect --date {day} --resume")
+
+
+def _copy_chat_prompt(prompt: str) -> bool:
+    """Copy a generated prompt without making clipboard failure fatal to chat."""
+    if platform.system() != "Darwin":
+        return False
+    try:
+        subprocess.run(["pbcopy"], input=prompt, text=True, check=True, capture_output=True)
+    except (OSError, subprocess.CalledProcessError):
+        return False
+    return True
+
+
+@app.command("chat-prompt")
+def chat_prompt(
+    date: str | None = DateOption,
+    clipboard: bool = typer.Option(False, "--clipboard", help="プロンプトをmacOSのクリップボードへコピーする"),
+    root: Path | None = RootOption,
+) -> None:
+    """ChatGPTへ渡す構造化インポート用プロンプトを表示します。"""
+    base = _root(root)
+    day = _day(date)
+    path = base / "templates" / CHAT_IMPORT_PROMPT_NAME
+    if not path.is_file():
+        _input_error(f"テンプレートがありません: templates/{CHAT_IMPORT_PROMPT_NAME}\ndaily-review init を実行してください")
+    try:
+        prompt = path.read_text(encoding="utf-8").replace("YYYY-MM-DD", day)
+    except OSError as exc:
+        typer.echo(f"ERROR: テンプレートを読み込めません: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+    if not clipboard:
+        typer.echo(prompt, nl=False)
+        return
+    if platform.system() != "Darwin":
+        _input_error("--clipboard はmacOSでのみ利用できます")
+    if not _copy_chat_prompt(prompt):
+        typer.echo("ERROR: クリップボードへコピーできません", err=True)
+        raise typer.Exit(code=4)
+    typer.echo("ChatGPT用プロンプトをクリップボードへコピーしました")
+
+
+@app.command("chat-import")
+def chat_import(
+    date: str | None = DateOption,
+    clipboard: bool = typer.Option(False, "--clipboard", help="macOSのクリップボードから読み込む"),
+    file: Path | None = typer.Option(None, "--file", help="ChatGPTの出力を保存したUTF-8ファイル"),
+    json_text: str | None = typer.Option(None, "--json-text", help="ChatGPTのJSONまたはJSONを含む文章"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="検証・変換だけを行い保存しない"),
+    approve: bool = typer.Option(False, "--approve", help="取込後に既存の確認・修正・承認フローを開始する"),
+    yes: bool = typer.Option(False, "--yes", help="安全条件を満たす場合のみ確認なしで承認する"),
+    output_json: bool = typer.Option(False, "--output-json", help="結果をJSONだけで標準出力へ出力する"),
+    force: bool = typer.Option(False, "--force", help="未承認ドラフトをバックアップして置き換える"),
+    root: Path | None = RootOption,
+) -> None:
+    """ChatGPTの構造化JSONを検証し、確認用ドラフトとして安全に取り込みます。"""
+    if approve and yes:
+        _chat_import_error("--approve と --yes は同時に使用できません", output_json=output_json)
+    if approve and output_json:
+        _chat_import_error("--approve と --output-json は同時に使用できません", output_json=output_json)
+    base = _root(root)
+    requested_day = _day(date)
+    try:
+        content, source = _read_chat_import_input(
+            json_text=json_text, file=file, clipboard=clipboard,
+        )
+        payload, warnings = validate_chat_payload(extract_chat_json(content))
+    except ChatSchemaError as exc:
+        _chat_import_error(str(exc), output_json=output_json, code=3)
+        return
+    except ValueError as exc:
+        _chat_import_error(str(exc), output_json=output_json)
+        return
+    except OSError as exc:
+        _chat_import_error(str(exc), output_json=output_json, code=4)
+        return
+    day = payload["date"]
+    if date is not None and requested_day != day:
+        _chat_import_error(
+            f"日付が一致しません\nCLI指定: {requested_day}\nJSON: {day}", output_json=output_json,
+        )
+    content_hash = import_hash(payload)
+    try:
+        existing_draft = load_draft(base, day)
+    except (OSError, ValueError) as exc:
+        _chat_import_error(f"既存ドラフトを読み込めません: {exc}", output_json=output_json, code=3)
+        return
+    if existing_draft:
+        if existing_draft.get("status") == "approved":
+            _chat_import_error(
+                "この日はすでに承認済みです。安全のため置き換えません\n"
+                f"既存の再編集・再承認フロー: daily-review reflect --date {day} --resume",
+                output_json=output_json,
+            )
+        if existing_draft.get("import_hash") == content_hash and not force:
+            _chat_import_error("同じ内容はすでに取り込み済みです", output_json=output_json)
+        if not force:
+            _chat_import_error(
+                f"未承認ドラフトがあります。確認を再開してください: daily-review reflect --date {day} --resume\n"
+                "置き換える場合は --force を指定してください",
+                output_json=output_json,
+            )
+    if daily_path(base, day).exists():
+        _chat_import_error("既存の日次データがあります。安全のため取り込みません", output_json=output_json)
+
+    virtual_draft = build_chat_import_draft(
+        payload,
+        input_id=f"dry-run-{day.replace('-', '')}",
+        content_hash=content_hash,
+        warnings=warnings,
+    )
+    if dry_run:
+        if output_json:
+            _chat_import_json_result(
+                day=day, source=source, draft=virtual_draft, input_id=None, input_saved=False,
+                approved=False, dry_run=True, warnings=warnings, root=base,
+            )
+        else:
+            _print_chat_import_result(
+                base=base, day=day, input_id=None, draft=virtual_draft, source=source,
+                warnings=warnings, dry_run=True, backup_path=None,
+            )
+        return
+
+    backup_path: Path | None = None
+    try:
+        if existing_draft:
+            backup_path = backup_unapproved_draft(base, day)
+        _, input_id = _store_natural_input(base, day, payload["raw_text"], "chat_import")
+        draft = build_chat_import_draft(payload, input_id=input_id, content_hash=content_hash, warnings=warnings)
+        atomic_write_json_data(draft_path(base, day), draft)
+    except (OSError, ValueError) as exc:
+        _chat_import_error(f"構造化入力を保存できません: {exc}", output_json=output_json, code=4)
+        return
+
+    if yes:
+        reason = _chat_auto_approval_reason(base, day, draft, warnings)
+        if reason:
+            _chat_import_error(
+                f"自動承認できません\n理由: {reason}\ndaily-review reflect --date {day} --resume",
+                output_json=output_json,
+            )
+        try:
+            approval = approve_draft(base, day, draft)
+        except (OSError, ValueError) as exc:
+            _chat_import_error(f"承認内容を保存できません: {exc}", output_json=output_json, code=3)
+            return
+        if output_json:
+            _chat_import_json_result(
+                day=day, source=source, draft=draft, input_id=input_id, input_saved=True,
+                approved=True, dry_run=False, warnings=warnings, backup_path=backup_path, root=base,
+            )
+        else:
+            _print_chat_import_result(
+                base=base, day=day, input_id=input_id, draft=draft, source=source,
+                warnings=warnings, dry_run=False, backup_path=backup_path,
+            )
+            _reflect_approved_message(day, approval)
+        return
+
+    if output_json:
+        _chat_import_json_result(
+            day=day, source=source, draft=draft, input_id=input_id, input_saved=True,
+            approved=False, dry_run=False, warnings=warnings, backup_path=backup_path, root=base,
+        )
+    else:
+        _print_chat_import_result(
+            base=base, day=day, input_id=input_id, draft=draft, source=source,
+            warnings=warnings, dry_run=False, backup_path=backup_path,
+        )
+    if approve:
+        reflect(date=day, text=None, clipboard=False, resume=True, yes=False, dry_run=False, json_output=False, root=base)
+
+
+def _chat_prompt_for_day(base: Path, day: str, summary: dict[str, Any], *, create_priorities: bool) -> str:
+    path = base / "templates" / CHAT_IMPORT_PROMPT_NAME
+    if not path.is_file():
+        raise FileNotFoundError(f"テンプレートがありません: templates/{CHAT_IMPORT_PROMPT_NAME}")
+    template = path.read_text(encoding="utf-8")
+    try:
+        priorities = load_priorities(base, create=create_priorities)
+    except FileNotFoundError:
+        # --prompt-only must remain read-only even in an old workspace.
+        priorities = list(DEFAULT_PRIORITIES["priorities"])
+    return build_dynamic_prompt(base, day, summary, template, priorities)
+
+
+def _save_chat_session(base: Path, day: str, status: str, **updates: Any) -> None:
+    try:
+        save_session(base, day, status, **updates)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"WARN: chat sessionを保存できません: {exc}", err=True)
+
+
+def _print_chat_completed(base: Path, day: str) -> None:
+    entry = load_daily(base, day) or {}
+    approval = entry.get("draft_approval") if isinstance(entry.get("draft_approval"), dict) else {}
+    today_main = approval.get("today_main") if isinstance(approval.get("today_main"), list) else []
+    proposal = entry.get("tomorrow_plan_proposal") or {}
+    tomorrow_main = proposal.get("main") if isinstance(proposal.get("main"), list) else []
+    minimums = [
+        task.get("minimum_line") for task in proposal.get("tasks") or []
+        if isinstance(task, dict) and isinstance(task.get("minimum_line"), str)
+    ]
+    typer.echo("今日の振り返りを保存しました")
+    typer.echo(f"日付: {day}")
+    typer.echo(f"今日のMain: {len(today_main)}件")
+    typer.echo(f"明日のMain: {len(tomorrow_main)}件")
+    typer.echo(f"保存先: {daily_path(base, day).relative_to(base)}")
+    typer.echo("明日のMain:")
+    for index, item in enumerate(tomorrow_main, start=1):
+        typer.echo(f"{index}. {item}")
+    if minimums:
+        typer.echo("最低ライン:")
+        for item in minimums:
+            typer.echo(f"- {item}")
+
+
+def _chat_resume(base: Path, day: str) -> None:
+    """Delegate approval and editing to the existing reflect resume flow."""
+    try:
+        draft = load_draft(base, day)
+    except (OSError, ValueError) as exc:
+        _input_error(f"整理ドラフトを読み込めません: {exc}")
+        return
+    if not draft:
+        _input_error(f"再開できるドラフトがありません\ndaily-review chat --date {day} を実行してください")
+    if draft.get("status") == "approved":
+        typer.echo(f"{day}の振り返りはすでに完了しています")
+        return
+    reflect(date=day, text=None, clipboard=False, resume=True, yes=False, dry_run=False, json_output=False, root=base)
+    try:
+        current = load_draft(base, day)
+    except (OSError, ValueError):
+        current = None
+    if current and current.get("status") == "approved":
+        _save_chat_session(base, day, "approved", completed_at=now_iso(), draft_path=str(draft_path(base, day).relative_to(base)))
+        _print_chat_completed(base, day)
+    elif current:
+        _save_chat_session(base, day, "draft", draft_path=str(draft_path(base, day).relative_to(base)))
+        typer.echo("未承認ドラフトとして保存しました")
+        typer.echo(f"再開: daily-review chat --date {day} --resume")
+
+
+def _chat_import_and_optionally_review(
+    *,
+    base: Path,
+    day: str,
+    clipboard: bool,
+    file: Path | None,
+    json_text: str | None,
+    dry_run: bool,
+    yes: bool,
+    force: bool,
+    review_after: bool,
+) -> None:
+    try:
+        chat_import(
+            date=day,
+            clipboard=clipboard,
+            file=file,
+            json_text=json_text,
+            dry_run=dry_run,
+            approve=False,
+            yes=yes,
+            output_json=False,
+            force=force,
+            root=base,
+        )
+    except typer.Exit as exc:
+        if exc.exit_code:
+            typer.echo("次の操作:")
+            typer.echo(f"daily-review chat --date {day} --import-only --clipboard")
+        raise
+    if dry_run:
+        return
+    try:
+        draft = load_draft(base, day)
+    except (OSError, ValueError):
+        draft = None
+    if draft and draft.get("status") == "approved":
+        _save_chat_session(base, day, "approved", imported_at=now_iso(), draft_path=str(draft_path(base, day).relative_to(base)), completed_at=now_iso())
+        _print_chat_completed(base, day)
+        return
+    _save_chat_session(base, day, "imported", imported_at=now_iso(), draft_path=str(draft_path(base, day).relative_to(base)))
+    _save_chat_session(base, day, "draft", draft_path=str(draft_path(base, day).relative_to(base)))
+    if review_after:
+        _chat_resume(base, day)
+
+
+def _read_chat_paste() -> str:
+    typer.echo("JSONを貼り付けてください。最後の行に __END__、または空行を2回入力すると終了します。")
+    lines: list[str] = []
+    blank_lines = 0
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            break
+        if line.rstrip("\r\n") == "__END__":
+            break
+        if not line.strip():
+            blank_lines += 1
+            if blank_lines >= 2:
+                break
+        else:
+            blank_lines = 0
+        lines.append(line)
+    value = "".join(lines)
+    if not value.strip():
+        _input_error("ChatGPT連携用JSONを指定してください")
+    return value
+
+
+@app.command("chat")
+def chat(
+    date: str | None = DateOption,
+    resume: bool = typer.Option(False, "--resume", help="未承認ドラフトの確認・修正・承認を再開する"),
+    prompt_only: bool = typer.Option(False, "--prompt-only", help="動的プロンプトだけを表示する"),
+    copy_prompt: bool = typer.Option(False, "--copy-prompt", help="プロンプトをクリップボードへコピーする"),
+    import_only: bool = typer.Option(False, "--import-only", help="プロンプトを省略してJSONの取り込みから開始する"),
+    clipboard: bool = typer.Option(False, "--clipboard", help="macOSのクリップボードからJSONを読み込む"),
+    file: Path | None = typer.Option(None, "--file", help="ChatGPT出力のUTF-8 JSONファイル"),
+    json_text: str | None = typer.Option(None, "--json-text", help="ChatGPTのJSONまたはJSONを含む文章"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="JSONを検証・表示するだけで保存しない"),
+    yes: bool = typer.Option(False, "--yes", help="安全条件を満たす場合のみ確認なしで承認する"),
+    root: Path | None = RootOption,
+) -> None:
+    """ChatGPTとの日次往復を、既存の安全な取り込み・承認処理で進めます。"""
+    if sum((resume, prompt_only, import_only)) > 1:
+        _input_error("--resume、--prompt-only、--import-only は同時に使用できません")
+    if (clipboard or file is not None or json_text is not None or yes or dry_run) and not import_only:
+        _input_error("JSON入力オプション、--yes、--dry-run は --import-only と併用してください")
+    base = _root(root)
+    day = _day(date)
+    try:
+        draft = load_draft(base, day)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"ERROR: 整理ドラフトを読み込めません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    state = workflow_state(base, day, draft)
+    if state == "approved":
+        typer.echo(f"{day}の振り返りはすでに完了しています")
+        typer.echo(f"daily-review summary --date {day}")
+        return
+    if state == "daily_only":
+        typer.echo("ERROR: 日次データは存在しますが、承認状態を確認できません", err=True)
+        typer.echo("daily-review doctor を実行してください", err=True)
+        raise typer.Exit(code=3)
+    if resume:
+        _chat_resume(base, day)
+        return
+    if import_only:
+        _chat_import_and_optionally_review(
+            base=base, day=day, clipboard=clipboard, file=file, json_text=json_text,
+            dry_run=dry_run, yes=yes, force=False, review_after=False,
+        )
+        return
+
+    try:
+        summary = build_daily_summary(base, day)
+        prompt = _chat_prompt_for_day(base, day, summary, create_priorities=not prompt_only)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"ERROR: ChatGPT用プロンプトを生成できません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    typer.echo(f"daily-review chat｜{day}")
+    if prompt_only:
+        typer.echo(prompt, nl=False)
+        if copy_prompt:
+            if _copy_chat_prompt(prompt):
+                typer.echo("ChatGPT用プロンプトをコピーしました")
+            else:
+                typer.echo("WARN: コピーできなかったため、上のプロンプトを手動でコピーしてください")
+        return
+    if state == "draft":
+        typer.echo(f"{day}には未承認のドラフトがあります。")
+        typer.echo("[r] 既存ドラフトを再開  [n] 新しいChatGPT入力を取り込む  [q] 終了")
+        choice = typer.prompt("選択", default="r").strip().lower()
+        if choice == "r":
+            _chat_resume(base, day)
+            return
+        if choice == "q":
+            _save_chat_session(base, day, "draft", draft_path=str(draft_path(base, day).relative_to(base)))
+            typer.echo("未承認ドラフトとして保存しました")
+            return
+        if choice != "n":
+            _input_error("r、n、qのいずれかを入力してください")
+        force_import = True
+    else:
+        typer.echo("ChatGPTで今日の振り返りを整理します。")
+        force_import = False
+    typer.echo(prompt, nl=False)
+    _save_chat_session(base, day, "waiting_for_chatgpt", **{
+        "prompt_generated_at": now_iso(),
+        "prompt_hash": prompt_hash(prompt),
+        "imported_at": None,
+        "draft_path": None,
+        "completed_at": None,
+    })
+    should_copy = copy_prompt or typer.confirm("ChatGPT用プロンプトをクリップボードへコピーしますか？", default=True)
+    if should_copy:
+        if _copy_chat_prompt(prompt):
+            typer.echo("ChatGPT用プロンプトをコピーしました")
+            typer.echo("ChatGPTへ貼り付けて、今日の振り返りを書いてください")
+        else:
+            typer.echo("WARN: コピーできなかったため、上のプロンプトを手動でコピーしてください")
+    typer.echo("ChatGPTから返されたJSONを取り込みます。")
+    typer.echo("[c] クリップボードから読み込む  [p] この画面へ貼り付ける  [f] JSONファイルを指定する  [q] 終了")
+    source = typer.prompt("選択", default="c").strip().lower()
+    if source == "q":
+        _save_chat_session(base, day, "cancelled")
+        typer.echo("ChatGPT連携を終了しました")
+        return
+    if source == "c":
+        values = {"clipboard": True, "file": None, "json_text": None}
+    elif source == "p":
+        values = {"clipboard": False, "file": None, "json_text": _read_chat_paste()}
+    elif source == "f":
+        values = {"clipboard": False, "file": Path(typer.prompt("JSONファイルのパス")), "json_text": None}
+    else:
+        _input_error("c、p、f、qのいずれかを入力してください")
+        return
+    _chat_import_and_optionally_review(
+        base=base, day=day, dry_run=False, yes=False, force=force_import, review_after=True, **values,
+    )
 
 
 def _print_organize_result(result: dict[str, Any], base: Path, day: str, *, dry_run: bool) -> None:
@@ -1663,7 +2193,10 @@ def home(
     """毎日最初に見る、計画・未完了・次の操作の統合画面です。"""
     base = _root(root)
     report = build_daily_summary(base, _day(date))
-    _print_summary(report, title="daily-review home", next_override=home_next_command(report))
+    chat_next = chat_home_next_command(base, report)
+    _print_summary(report, title="daily-review home", next_override=chat_next or home_next_command(report))
+    if "--import-only --clipboard" in chat_next:
+        typer.echo("状態: ChatGPTからのJSON待ち")
     typer.echo("未完了タスク:")
     if report["incomplete_tasks"]:
         for index, item in enumerate(report["incomplete_tasks"], start=1):
@@ -1908,10 +2441,17 @@ def release_check(root: Path | None = RootOption) -> None:
         command.name or command.callback.__name__.replace("_", "-")
         for command in app.registered_commands
     }
-    required_commands = {"home", "summary", "start", "next", "doctor", "weekly", "monthly", "backup", "restore"}
+    required_commands = {
+        "home", "summary", "start", "next", "doctor", "weekly", "monthly", "backup", "restore",
+        "chat", "chat-prompt", "chat-import",
+    }
     missing_commands = sorted(required_commands - command_names)
     if missing_commands:
         errors.append("主要コマンドが登録されていません: " + ", ".join(missing_commands))
+    required_checks = {"chat import schema", "chat import prompt", "priorities config"}
+    missing_checks = sorted(required_checks - set(report["checks"]))
+    if missing_checks:
+        errors.append("ChatGPTワークフローの必須確認が不足しています: " + ", ".join(missing_checks))
     typer.echo(f"保存先ルート: {report['root']}")
     typer.echo(f"version: {__version__}")
     if errors:
@@ -1920,6 +2460,10 @@ def release_check(root: Path | None = RootOption) -> None:
         typer.echo("daily-review release-check: ERROR")
         raise typer.Exit(code=1)
     typer.echo("daily-review release-check: OK")
+    typer.echo("OK   chat workflow")
+    typer.echo("OK   chat prompt template")
+    typer.echo("OK   chat import schema")
+    typer.echo("OK   priorities config")
     typer.echo("v1.0.0 is ready")
 
 

@@ -140,9 +140,9 @@ def test_reflect_duplicate_and_home_next_commands(tmp_path, monkeypatch):
     assert "同じ内容が直前に保存されています" in duplicate.output
 
     empty_home = runner.invoke(app, ["home", "--date", DAY, "--root", str(tmp_path / "empty")])
-    assert f"daily-review reflect --date {DAY}" in empty_home.output
+    assert f"daily-review chat --date {DAY}" in empty_home.output
     inbox_home = runner.invoke(app, ["home", "--date", DAY, "--root", str(tmp_path)])
     assert f"daily-review organize --date {DAY}" in inbox_home.output
     assert runner.invoke(app, ["organize", "--date", DAY, "--root", str(tmp_path)]).exit_code == 0
     draft_home = runner.invoke(app, ["home", "--date", DAY, "--root", str(tmp_path)])
-    assert f"daily-review reflect --date {DAY} --resume" in draft_home.output
+    assert f"daily-review chat --date {DAY} --resume" in draft_home.output

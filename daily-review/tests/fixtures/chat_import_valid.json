@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "date": "2026-07-14",
+  "raw_text": "今日は院試の過去問を2問解いた。研究も進めた。",
+  "today": {
+    "main": ["院試の過去問を2問解いた", "O VIIとO VIIIの確認を進めた"],
+    "completed": ["院試の過去問を2問解いた"],
+    "partial": ["O VIIとO VIIIの確認を進めた"],
+    "not_completed": ["筋トレ"]
+  },
+  "reflection": {
+    "good": ["研究を進められた"],
+    "problems": ["スマホを見て集中が途切れた"],
+    "causes": ["スマホを机の上に置いていた"],
+    "change_next": ["勉強中はスマホを別の部屋に置く"]
+  },
+  "tomorrow": {
+    "main": ["院試の過去問を2問解く", "O VII fittingを進める"],
+    "other_tasks": ["筋トレをする"],
+    "minimum": ["院試の問題を1問だけ開く"]
+  },
+  "journal": ["研究室で先生と話せてよかった"],
+  "unclassified": []
+}

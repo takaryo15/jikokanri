@@ -138,7 +138,7 @@ def test_home_summary_and_doctor_reflect_approval_and_detect_bad_draft(tmp_path)
     _prepare_draft(tmp_path)
     before = runner.invoke(app, ["home", "--date", DAY, "--root", str(tmp_path)])
     assert "整理ドラフト: 未承認" in before.output
-    assert f"daily-review reflect --date {DAY} --resume" in before.output
+    assert f"daily-review chat --date {DAY} --resume" in before.output
     assert runner.invoke(app, ["approve", "--date", DAY, "--yes", "--root", str(tmp_path)]).exit_code == 0
     home = runner.invoke(app, ["home", "--date", DAY, "--root", str(tmp_path)])
     summary = runner.invoke(app, ["summary", "--date", DAY, "--root", str(tmp_path)])

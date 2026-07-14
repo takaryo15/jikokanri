@@ -15,11 +15,17 @@
 - 自然文入力から承認までを一括実行する`daily-review reflect`.
 - 未承認ドラフトから再開する`reflect --resume`、安全条件付きの自動承認`reflect --yes`、統合フローのJSON出力.
 - 中断・失敗後の復旧案内、および状態に応じたhomeの次操作表示.
+- ChatGPTの構造化JSONを安全に取り込む`daily-review chat-import`と、形式を表示する`daily-review chat-prompt`.
+- `chat-schema-1.0`による検証、未知フィールドの警告、インポートハッシュによる重複検知、強制置換前のドラフトバックアップ.
+- ChatGPTとの日次往復をまとめる`daily-review chat`、`--prompt-only`、`--copy-prompt`、`--import-only`.
+- 動的なChatGPTプロンプト、`data/sessions`による補助セッション管理、`config/priorities.json`の優先順位設定.
 
 ### Safety
 
 - Organization drafts do not modify daily reviews, proposals, final plans, or raw inbox text.
 - Unknown or ambiguous sentences are retained as unclassified text instead of being inferred.
+- ChatGPTの構造化入力は確認用ドラフトとして保存し、明示的な承認なしに日次記録を変更しません.
+- ChatGPTセッションは補助情報であり、日次データやドラフトより優先されません.
 
 ## 1.0.0 - 2026-07-14
 

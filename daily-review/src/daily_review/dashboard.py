@@ -131,7 +131,7 @@ def home_next_command(summary: dict[str, Any]) -> str:
     """Use the v1.1 integrated flow only on the daily home screen."""
     day = summary["date"]
     if not summary.get("draft") and not summary.get("inbox_entry_count"):
-        return f"daily-review reflect --date {day}"
+        return "daily-review chat-import --clipboard"
     if summary.get("draft") and summary.get("draft_status") != "approved":
         return f"daily-review reflect --date {day} --resume"
     return next_command(summary)

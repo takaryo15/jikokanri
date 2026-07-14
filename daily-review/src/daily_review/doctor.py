@@ -5,8 +5,16 @@ from pathlib import Path
 from typing import Any
 
 from . import __version__
+from .chat_schema import SCHEMA_VERSION
 from .date_utils import week_range_for
-from .storage import DATA_DIRS, REQUIRED_TEMPLATE_NAMES, read_json_file
+from .session import SESSION_STATUSES
+from .storage import (
+    CHAT_IMPORT_PROMPT_NAME,
+    DATA_DIRS,
+    REQUIRED_TEMPLATE_NAMES,
+    priorities_path,
+    read_json_file,
+)
 from .validation import ALLOWED_TASK_RESULT_STATUSES, validate_plan, validate_task_results
 
 
@@ -51,6 +59,8 @@ def run_doctor(root: Path) -> dict[str, Any]:
                 issues.append(_issue("WARN", "data/inbox がありません。daily-review input 実行時に自動作成されます"))
             elif relative == Path("data/drafts"):
                 issues.append(_issue("WARN", "data/drafts がありません。daily-review organize 実行時に自動作成されます"))
+            elif relative == Path("data/sessions"):
+                issues.append(_issue("WARN", "data/sessions がありません。daily-review chat 実行時に自動作成されます"))
             else:
                 issues.append(_issue("ERROR", f"必要なディレクトリがありません: {relative}"))
         elif not os.access(path, os.W_OK):
@@ -62,6 +72,24 @@ def run_doctor(root: Path) -> dict[str, Any]:
             issues.append(_issue("ERROR", f"必要なテンプレートがありません: templates/{name}"))
     if all((root / "templates" / name).is_file() for name in REQUIRED_TEMPLATE_NAMES):
         checks.append("必須テンプレート")
+    chat_prompt = root / "templates" / CHAT_IMPORT_PROMPT_NAME
+    if chat_prompt.is_file():
+        try:
+            prompt_text = chat_prompt.read_text(encoding="utf-8")
+        except OSError as exc:
+            issues.append(_issue("ERROR", f"ChatGPT取込テンプレートを読み込めません: {exc}"))
+        else:
+            required_prompt_fields = ('"schema_version": "1.0"', '"raw_text"', '"unclassified"')
+            if all(field in prompt_text for field in required_prompt_fields):
+                checks.append("chat import prompt")
+            else:
+                issues.append(_issue("ERROR", "chat import promptのschema_versionまたは必須変数が不足しています"))
+    else:
+        issues.append(_issue("WARN", f"ChatGPT取込テンプレートがありません: templates/{CHAT_IMPORT_PROMPT_NAME}（daily-review init で作成できます）"))
+    if SCHEMA_VERSION == "1.0":
+        checks.append("chat import schema")
+    else:
+        issues.append(_issue("ERROR", f"chat import schemaのバージョンが不正です: {SCHEMA_VERSION}"))
     if week_range_for("2026-07-08") == ("2026-07-07", "2026-07-13"):
         checks.append("火曜始まりの週")
     else:
@@ -135,4 +163,43 @@ def run_doctor(root: Path) -> dict[str, Any]:
                     draft_status_ok = False
     if drafts_dir.is_dir() and draft_status_ok:
         checks.append("drafts status")
+    sessions_dir = root / "data" / "sessions"
+    sessions_ok = sessions_dir.is_dir()
+    if sessions_dir.is_dir():
+        for path in sorted(sessions_dir.glob("*.json")):
+            try:
+                value = read_json_file(path)
+                if not isinstance(value, dict) or not isinstance(value.get("date"), str):
+                    raise ValueError("dateがありません")
+                status = value.get("status")
+                if status not in SESSION_STATUSES:
+                    raise ValueError("statusが不正です")
+            except (OSError, ValueError) as exc:
+                issues.append(_issue("WARN", f"chat sessionを読み込めません: {path.name} ({exc})"))
+                sessions_ok = False
+                continue
+            if status == "approved" and not (root / "data" / "daily" / f"{value['date']}.json").is_file():
+                issues.append(_issue("WARN", f"{path.name}: approvedなのに日次データがありません"))
+                sessions_ok = False
+            if status == "draft" and not (root / "data" / "drafts" / f"{value['date']}.json").is_file():
+                issues.append(_issue("WARN", f"{path.name}: draftなのにドラフトがありません"))
+                sessions_ok = False
+    if sessions_ok:
+        checks.append("chat sessions")
+
+    priority_file = priorities_path(root)
+    if not priority_file.is_file():
+        issues.append(_issue("WARN", "優先順位設定がありません: config/priorities.json（daily-review init で作成できます）"))
+    else:
+        try:
+            priority_data = read_json_file(priority_file)
+            priorities = priority_data.get("priorities") if isinstance(priority_data, dict) else None
+            if not isinstance(priorities, list) or not all(isinstance(item, str) and item.strip() for item in priorities):
+                raise ValueError("prioritiesは空でない文字列の配列にしてください")
+            if len(priorities) != len(set(priorities)):
+                raise ValueError("prioritiesに重複があります")
+        except (OSError, ValueError) as exc:
+            issues.append(_issue("ERROR", f"優先順位設定が不正です: {exc}"))
+        else:
+            checks.append("priorities config")
     return {"root": root, "daily_count": len(daily_files), "issues": issues, "checks": checks}

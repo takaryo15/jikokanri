@@ -16,12 +16,56 @@ DATA_DIRS = [
     Path("data/monthly"),
     Path("data/inbox"),
     Path("data/drafts"),
+    Path("data/sessions"),
     Path("logs"),
     Path("templates"),
 ]
 
+DEFAULT_PRIORITIES = {
+    "priorities": ["院試", "研究", "筋トレ", "競馬AI", "定期収入", "松尾研", "読書"],
+}
+
 
 TEMPLATE_CONTENTS = {
+    "chat_import_prompt.md": """# ChatGPT構造化インポート用プロンプト
+
+次の振り返りを、schema_version 1.0 のJSONオブジェクト1つに整理してください。
+
+- あなたは振り返りを整理する役割です。原文にない内容は追加しないでください
+- JSONコードブロックを1つだけ出力し、JSON以外の説明は付けない
+- 配列の項目は文字列にし、空の項目や重複を入れない
+- today.main と tomorrow.main はそれぞれ最大3件
+- 判断できない内容は unclassified に残す
+- raw_text にはユーザーの原文を一文字も変えずに入れる
+- 日本語を保持する
+
+```json
+{
+  "schema_version": "1.0",
+  "date": "YYYY-MM-DD",
+  "raw_text": "ユーザーの原文",
+  "today": {
+    "main": [],
+    "completed": [],
+    "partial": [],
+    "not_completed": []
+  },
+  "reflection": {
+    "good": [],
+    "problems": [],
+    "causes": [],
+    "change_next": []
+  },
+  "tomorrow": {
+    "main": [],
+    "other_tasks": [],
+    "minimum": []
+  },
+  "journal": [],
+  "unclassified": []
+}
+```
+""",
     "night_review_prompt.md": """# 夜の振り返り
 ## 今日のMain
 - 完了
@@ -142,6 +186,8 @@ REQUIRED_TEMPLATE_NAMES = (
     "weekly_review_prompt.md",
 )
 
+CHAT_IMPORT_PROMPT_NAME = "chat_import_prompt.md"
+
 
 def resolve_root(root: Path | None = None) -> Path:
     """Resolve the data root without changing an explicitly supplied path."""
@@ -183,6 +229,13 @@ def init_workspace(root: Path) -> tuple[list[Path], list[Path]]:
         else:
             path.write_text(content, encoding="utf-8")
             created.append(path)
+    config = priorities_path(root)
+    if config.exists():
+        existing.append(config)
+    else:
+        config.parent.mkdir(parents=True, exist_ok=True)
+        config.write_text(json.dumps(DEFAULT_PRIORITIES, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        created.append(config)
     return created, existing
 
 
@@ -216,6 +269,14 @@ def inbox_path(root: Path, day: str) -> Path:
 
 def draft_path(root: Path, day: str) -> Path:
     return root / "data" / "drafts" / f"{day}.json"
+
+
+def session_path(root: Path, day: str) -> Path:
+    return root / "data" / "sessions" / f"{day}.json"
+
+
+def priorities_path(root: Path) -> Path:
+    return root / "config" / "priorities.json"
 
 
 def read_json_file(path: Path) -> dict[str, Any]:
