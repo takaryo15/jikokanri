@@ -1,0 +1,96 @@
+{
+  "report_type": "weekly",
+  "period": {
+    "start_date": "2026-07-14",
+    "end_date": "2026-07-20"
+  },
+  "start_date": "2026-07-14",
+  "end_date": "2026-07-20",
+  "data_coverage": {
+    "period_days": 7,
+    "daily_data_days": 0,
+    "task_results_days": 0,
+    "approved_plan_days": 0
+  },
+  "recorded_days": 0,
+  "approved_plan_days": 0,
+  "main_summary": {
+    "total": 0,
+    "completed": 0,
+    "partial": 0,
+    "minimum_only": 0,
+    "not_started": 0,
+    "skipped": 0,
+    "unrecorded": 0,
+    "recorded": 0,
+    "percent": null
+  },
+  "minimum_line_summary": {
+    "achieved": 0,
+    "total": 0,
+    "percent": null,
+    "reason": "日次データに最低ライン達成結果が保存されていないため"
+  },
+  "continuity": {
+    "review_recorded": {
+      "count": 0,
+      "total": 7,
+      "percent": 0.0
+    },
+    "task_results_recorded": {
+      "count": 0,
+      "total": 7,
+      "percent": 0.0
+    },
+    "approved_plan": {
+      "count": 0,
+      "total": 7,
+      "percent": 0.0
+    }
+  },
+  "completed_items": [],
+  "failure_reasons": [],
+  "carryover_analysis": [],
+  "improvement_suggestion": {
+    "text": "タスク結果の記録率が50%未満です。次の期間は結果を記録するタイミングを1つ決めてください。",
+    "rule": "low_task_result_continuity",
+    "evidence": [
+      {
+        "count": 0,
+        "total": 7,
+        "percent": 0.0
+      }
+    ]
+  },
+  "main_status_counts": {},
+  "minimum_line_rate": {
+    "achieved": 0,
+    "total": 0,
+    "percent": 0
+  },
+  "what_went_well": [],
+  "breakdown_ranking": [],
+  "daily_changes": [],
+  "pending_proposal_days": [],
+  "next_week_change_candidate": "タスク結果の記録率が50%未満です。次の期間は結果を記録するタイミングを1つ決めてください。",
+  "warnings": [
+    "記録日数が少ないため、週次傾向は参考値です"
+  ],
+  "task_execution": {
+    "total": 0,
+    "completion_rate": {
+      "completed": 0,
+      "total": 0,
+      "percent": null
+    },
+    "task_minimum_line_rate": {
+      "achieved": 0,
+      "total": 0,
+      "percent": null
+    },
+    "status_counts": {},
+    "unrecorded_count": 0,
+    "carryover_count": 0,
+    "repeated_incomplete_candidates": []
+  }
+}

@@ -40,3 +40,13 @@ def date_range(start: str, end: str) -> list[str]:
         days.append(current.isoformat())
         current += timedelta(days=1)
     return days
+
+
+def month_range_for(day: str) -> tuple[str, str]:
+    target = parse_date(day)
+    start = target.replace(day=1)
+    if start.month == 12:
+        next_month = start.replace(year=start.year + 1, month=1)
+    else:
+        next_month = start.replace(month=start.month + 1)
+    return start.isoformat(), (next_month - timedelta(days=1)).isoformat()

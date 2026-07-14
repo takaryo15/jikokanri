@@ -13,6 +13,7 @@ from .models import DailyEntry, now_iso
 DATA_DIRS = [
     Path("data/daily"),
     Path("data/weekly"),
+    Path("data/monthly"),
     Path("logs"),
     Path("templates"),
 ]
@@ -169,6 +170,14 @@ def weekly_path(root: Path, start: str, end: str) -> Path:
 
 def weekly_log_path(root: Path, start: str, end: str) -> Path:
     return root / "logs" / f"weekly_{start}_{end}.md"
+
+
+def monthly_path(root: Path, month: str) -> Path:
+    return root / "data" / "monthly" / f"{month}.json"
+
+
+def monthly_log_path(root: Path, month: str) -> Path:
+    return root / "logs" / f"monthly_{month}.md"
 
 
 def read_json_file(path: Path) -> dict[str, Any]:

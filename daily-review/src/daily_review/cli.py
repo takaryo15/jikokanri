@@ -10,8 +10,8 @@ from typing import Any
 import typer
 from pydantic import ValidationError
 
-from .date_utils import parse_date, today_string, tomorrow_of, week_range_for
-from .markdown import render_daily, render_weekly
+from .date_utils import month_range_for, parse_date, today_string, tomorrow_of, week_range_for
+from .markdown import render_daily, render_monthly, render_weekly
 from .models import Plan, ProposalInput, ReviewInput, TaskResultsInput, dump_model, now_iso
 from .storage import (
     atomic_write_json_many,
@@ -25,10 +25,13 @@ from .storage import (
     save_daily,
     weekly_log_path,
     weekly_path,
+    monthly_log_path,
+    monthly_path,
     write_text,
 )
 from .validation import ValidationResult, validate_daily, validate_plan
 from .weekly import build_weekly_summary
+from .reporting import build_report, weekly_trends
 
 
 app = typer.Typer(help="毎日の振り返りと明日の指示書をローカル保存するCLIです。", no_args_is_help=True)
@@ -1042,25 +1045,55 @@ def weekly(
     typer.echo(f"Markdownを保存しました: {markdown_path}")
     typer.echo(f"対象期間: {start}〜{end}")
     typer.echo(f"記録日数: {summary['recorded_days']}")
-    if summary["warnings"]:
-        for warning in summary["warnings"]:
-            typer.echo(f"警告: {warning}")
-    rate = summary["minimum_line_rate"]
-    typer.echo(f"最低ライン達成率: {rate['achieved']}/{rate['total']}（{rate['percent']}%）")
-    typer.echo(f"確定版指示書を作れた日数: {summary['approved_plan_days']}")
-    task_summary = summary.get("task_execution", {})
+    for warning in summary["warnings"]:
+        typer.echo(f"警告: {warning}")
+    main = summary["main_summary"]
+    typer.echo(f"Main: 完了 {main['completed']}/{main['recorded']}（{'算出不可' if main['percent'] is None else str(main['percent']) + '%' }）、結果未記録 {main['unrecorded']}件")
+    minimum = summary["minimum_line_summary"]
+    typer.echo(f"最低ライン達成率: {'算出不可' if minimum['percent'] is None else str(minimum['percent']) + '%'}")
+    continuity = summary["continuity"]
+    typer.echo(f"継続状況: 振り返り {continuity['review_recorded']['count']}/{continuity['review_recorded']['total']}日、結果 {continuity['task_results_recorded']['count']}/{continuity['task_results_recorded']['total']}日、確定版 {continuity['approved_plan']['count']}/{continuity['approved_plan']['total']}日")
+    typer.echo(f"崩れた原因: {summary['failure_reasons'][0]['cause'] if summary['failure_reasons'] else 'なし'}")
+    typer.echo(f"引き継ぎが多いタスク: {summary['carryover_analysis'][0]['task'] if summary['carryover_analysis'] else 'なし'}")
+    typer.echo(f"来週変えること1つ: {summary['improvement_suggestion']['text']}")
+    # Keep the established operational lines for scripts and existing users.
+    task_summary = summary["task_execution"]
     typer.echo("タスク実行状況")
-    if task_summary.get("total"):
+    if task_summary["total"]:
         completion = task_summary["completion_rate"]
-        minimum = task_summary["task_minimum_line_rate"]
+        task_minimum = task_summary["task_minimum_line_rate"]
         typer.echo(f"通常タスク完了率: {completion['percent']}%（{completion['completed']}/{completion['total']}）")
-        typer.echo(f"最低ライン達成率: {minimum['percent']}%（{minimum['achieved']}/{minimum['total']}）")
-        for status, label in TASK_STATUS_LABELS.items():
-            typer.echo(f"{label}: {task_summary['status_counts'].get(status, 0)}件")
-        typer.echo(f"未記録: {task_summary['unrecorded_count']}件")
-        typer.echo(f"引き継ぎ候補数: {task_summary['carryover_count']}件")
+        typer.echo(f"最低ライン達成率: {task_minimum['percent']}%（{task_minimum['achieved']}/{task_minimum['total']}）")
     else:
         typer.echo("集計対象なし")
+
+
+@app.command()
+def monthly(
+    date: str | None = DateOption,
+    root: Path | None = RootOption,
+) -> None:
+    """指定日を含む暦月の振り返りを作成します。"""
+    base = _root(root)
+    day = _day(date)
+    start, end = month_range_for(day)
+    summary = build_report(base, start, end, period_type="monthly")
+    summary["weekly_trends"] = weekly_trends(base, start, end)
+    month = start[:7]
+    json_path = monthly_path(base, month)
+    write_text(json_path, json.dumps(summary, ensure_ascii=False, indent=2) + "\n")
+    markdown_path = write_text(monthly_log_path(base, month), render_monthly(summary))
+    typer.echo(f"月次集計を保存しました: {json_path}")
+    typer.echo(f"Markdownを保存しました: {markdown_path}")
+    typer.echo(f"対象月: {start}〜{end}")
+    typer.echo(f"Main達成率: {'算出不可' if summary['main_summary']['percent'] is None else str(summary['main_summary']['percent']) + '%'}")
+    minimum = summary["minimum_line_summary"]
+    typer.echo(f"最低ライン達成率: {'算出不可' if minimum['percent'] is None else str(minimum['percent']) + '%'}")
+    continuity = summary["continuity"]
+    typer.echo(f"継続状況: 振り返り {continuity['review_recorded']['count']}/{continuity['review_recorded']['total']}日、結果 {continuity['task_results_recorded']['count']}/{continuity['task_results_recorded']['total']}日、確定版 {continuity['approved_plan']['count']}/{continuity['approved_plan']['total']}日")
+    typer.echo(f"崩れた原因: {summary['failure_reasons'][0]['cause'] if summary['failure_reasons'] else 'なし'}")
+    typer.echo(f"引き継ぎが多いタスク: {summary['carryover_analysis'][0]['task'] if summary['carryover_analysis'] else 'なし'}")
+    typer.echo(f"翌月に変えること1つ: {summary['improvement_suggestion']['text']}")
 
 
 if __name__ == "__main__":

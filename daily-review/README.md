@@ -31,6 +31,7 @@ daily-review init
 ```text
 data/daily/
 data/weekly/
+data/monthly/
 logs/
 templates/
 ```
@@ -318,6 +319,7 @@ daily-review status --date YYYY-MM-DD
 daily-review list [--limit 7]
 daily-review validate --date YYYY-MM-DD
 daily-review weekly [--date YYYY-MM-DD]
+daily-review monthly [--date YYYY-MM-DD]
 daily-review next [--date YYYY-MM-DD]
 ```
 
@@ -352,6 +354,8 @@ data/weekly/YYYY-MM-DD_YYYY-MM-DD.json
 ```text
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
 ```
+
+月次JSONとMarkdownはそれぞれ `data/monthly/YYYY-MM.json` と `logs/monthly_YYYY-MM.md` に保存されます。
 
 JSON更新は一時ファイルへ書き出してから置き換えるため、保存途中の失敗で既存データを壊しにくい設計です。
 

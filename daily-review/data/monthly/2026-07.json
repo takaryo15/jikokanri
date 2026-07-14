@@ -1,0 +1,131 @@
+{
+  "report_type": "monthly",
+  "period": {
+    "start_date": "2026-07-01",
+    "end_date": "2026-07-31"
+  },
+  "start_date": "2026-07-01",
+  "end_date": "2026-07-31",
+  "data_coverage": {
+    "period_days": 31,
+    "daily_data_days": 0,
+    "task_results_days": 0,
+    "approved_plan_days": 0
+  },
+  "recorded_days": 0,
+  "approved_plan_days": 0,
+  "main_summary": {
+    "total": 0,
+    "completed": 0,
+    "partial": 0,
+    "minimum_only": 0,
+    "not_started": 0,
+    "skipped": 0,
+    "unrecorded": 0,
+    "recorded": 0,
+    "percent": null
+  },
+  "minimum_line_summary": {
+    "achieved": 0,
+    "total": 0,
+    "percent": null,
+    "reason": "日次データに最低ライン達成結果が保存されていないため"
+  },
+  "continuity": {
+    "review_recorded": {
+      "count": 0,
+      "total": 31,
+      "percent": 0.0
+    },
+    "task_results_recorded": {
+      "count": 0,
+      "total": 31,
+      "percent": 0.0
+    },
+    "approved_plan": {
+      "count": 0,
+      "total": 31,
+      "percent": 0.0
+    }
+  },
+  "completed_items": [],
+  "failure_reasons": [],
+  "carryover_analysis": [],
+  "improvement_suggestion": {
+    "text": "タスク結果の記録率が50%未満です。次の期間は結果を記録するタイミングを1つ決めてください。",
+    "rule": "low_task_result_continuity",
+    "evidence": [
+      {
+        "count": 0,
+        "total": 31,
+        "percent": 0.0
+      }
+    ]
+  },
+  "main_status_counts": {},
+  "minimum_line_rate": {
+    "achieved": 0,
+    "total": 0,
+    "percent": 0
+  },
+  "what_went_well": [],
+  "breakdown_ranking": [],
+  "daily_changes": [],
+  "pending_proposal_days": [],
+  "next_week_change_candidate": "タスク結果の記録率が50%未満です。次の期間は結果を記録するタイミングを1つ決めてください。",
+  "warnings": [],
+  "task_execution": {
+    "total": 0,
+    "completion_rate": {
+      "completed": 0,
+      "total": 0,
+      "percent": null
+    },
+    "task_minimum_line_rate": {
+      "achieved": 0,
+      "total": 0,
+      "percent": null
+    },
+    "status_counts": {},
+    "unrecorded_count": 0,
+    "carryover_count": 0,
+    "repeated_incomplete_candidates": []
+  },
+  "weekly_trends": [
+    {
+      "start_date": "2026-07-01",
+      "end_date": "2026-07-06",
+      "main_completion_rate": null,
+      "review_recorded_days": 0,
+      "top_failure_reason": null
+    },
+    {
+      "start_date": "2026-07-07",
+      "end_date": "2026-07-13",
+      "main_completion_rate": null,
+      "review_recorded_days": 0,
+      "top_failure_reason": null
+    },
+    {
+      "start_date": "2026-07-14",
+      "end_date": "2026-07-20",
+      "main_completion_rate": null,
+      "review_recorded_days": 0,
+      "top_failure_reason": null
+    },
+    {
+      "start_date": "2026-07-21",
+      "end_date": "2026-07-27",
+      "main_completion_rate": null,
+      "review_recorded_days": 0,
+      "top_failure_reason": null
+    },
+    {
+      "start_date": "2026-07-28",
+      "end_date": "2026-07-31",
+      "main_completion_rate": null,
+      "review_recorded_days": 0,
+      "top_failure_reason": null
+    }
+  ]
+}
