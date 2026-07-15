@@ -82,6 +82,13 @@ from .goal_design import (
 from .session import prompt_hash, save_session
 from .v11_check import collect_v11_checks, repository_root
 from .v12_check import collect_v12_checks
+from .task_service import TaskQueryError, query_tasks
+from .quick_review import QuickReviewError, build_quick_entry, normalize_payload as normalize_quick_payload, save_quick_review
+from .csv_export import ExportError, export_csv, period_range
+from .notifications import (
+    ConsoleSender, FileSender, NotificationError, dispatch_notifications, evaluate_notifications,
+    load_history as load_notification_history, load_notification_config, parse_current,
+)
 
 
 app = typer.Typer(
@@ -96,6 +103,9 @@ plan_app = typer.Typer(help="目標由来の週次・日次計画を確認して
 evaluate_app = typer.Typer(help="目標を週次・月次で評価します。")
 replan_app = typer.Typer(help="評価に基づく計画修正案を確認して適用します。", invoke_without_command=True)
 design_app = typer.Typer(help="ChatGPTと往復する目標設計セッションを管理します。", invoke_without_command=True)
+tasks_app = typer.Typer(help="日次指示書と目標計画のタスクを一覧表示します。")
+export_app = typer.Typer(help="保存済みデータを分析用ファイルへ出力します。")
+notifications_app = typer.Typer(help="通知候補の判定、送信、履歴確認を行います。")
 app.add_typer(goal_app, name="goal")
 app.add_typer(plan_app, name="plan")
 goal_app.add_typer(milestone_app, name="milestone")
@@ -103,6 +113,9 @@ milestone_app.add_typer(step_app, name="step")
 goal_app.add_typer(evaluate_app, name="evaluate")
 goal_app.add_typer(replan_app, name="replan")
 goal_app.add_typer(design_app, name="design")
+app.add_typer(tasks_app, name="tasks")
+app.add_typer(export_app, name="export")
+app.add_typer(notifications_app, name="notifications")
 
 
 @app.callback()
@@ -761,6 +774,136 @@ def v12_check(
             typer.echo(f"v{report['version']} is ready" if report["version"] == "1.2.0" else "v1.2.0rc1 is ready for final operational testing")
     if report["errors"]:
         raise typer.Exit(code=5)
+
+
+@tasks_app.command("list")
+def tasks_list(
+    status: str | None = typer.Option(None, "--status", help="pending / completed / partial / minimum_only / not_started / skipped"),
+    priority: str | None = typer.Option(None, "--priority", help="high / medium / low"),
+    category: str | None = typer.Option(None, "--category", help="カテゴリの完全一致"),
+    due: str | None = typer.Option(None, "--due", help="today / tomorrow / overdue"),
+    main_only: bool = typer.Option(False, "--main", help="Main候補だけ表示"),
+    minimum_only: bool = typer.Option(False, "--minimum", help="最低限ライン付きだけ表示"),
+    all_items: bool = typer.Option(False, "--all", help="完了済みを含める"),
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+    detail: bool = typer.Option(False, "--detail", help="作成日・更新日・参照元も表示"),
+    date: str | None = DateOption,
+    root: Path | None = RootOption,
+) -> None:
+    """日次指示書と目標計画から、実行判断に必要なタスクを一覧表示します。"""
+    if output_format not in {"text", "json"}:
+        _goal_error("--format は text または json にしてください")
+    day = _day(date)
+    try:
+        values = query_tasks(
+            _root(root), today=day, status=status, priority=priority, category=category, due=due,
+            main_only=main_only, minimum_only=minimum_only, include_all=all_items,
+        )
+    except (TaskQueryError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    if output_format == "json":
+        typer.echo(json.dumps({"date": day, "count": len(values), "tasks": values}, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"タスク一覧｜{day}｜{len(values)}件")
+    if not values:
+        typer.echo("条件に一致するタスクはありません。")
+        return
+    for index, item in enumerate(values, start=1):
+        flags = [label for enabled, label in ((item["is_main"], "Main"), (item["is_minimum"], "最低限")) if enabled]
+        typer.echo(f"{index}. [{item['status']}] {item['title']}")
+        typer.echo(f"   ID: {item['short_id']} / 優先度: {item['priority']} / カテゴリ: {item['category'] or '未設定'} / 期限: {item['due_date'] or '未設定'}" + (f" / {', '.join(flags)}" if flags else ""))
+        if detail:
+            typer.echo(f"   参照元: {item['source']} {item['source_review_date']} / 作成: {item['created_at'] or '未記録'} / 更新: {item['updated_at'] or '未記録'}")
+
+
+@export_app.command("csv")
+def export_csv_command(
+    kind: str = typer.Option("all", "--type", help="reviews / tasks / instructions / all"),
+    output: Path | None = typer.Option(None, "--output", help="CSVファイルまたはall用ディレクトリ"),
+    date: str | None = typer.Option(None, "--date", help="単日指定。--periodの基準日にも使用"),
+    date_from: str | None = typer.Option(None, "--from", help="開始日 YYYY-MM-DD"),
+    date_to: str | None = typer.Option(None, "--to", help="終了日 YYYY-MM-DD"),
+    period: str | None = typer.Option(None, "--period", help="week（火曜開始）または month"),
+    excel: bool = typer.Option(False, "--excel", help="UTF-8 BOM付きで出力"),
+    force: bool = typer.Option(False, "--force", help="既存の出力CSVを上書き"),
+    root: Path | None = RootOption,
+) -> None:
+    """レビュー、タスク、指示書を決定的なCSVで出力します。"""
+    try:
+        start, end = period_range(day=date, date_from=date_from, date_to=date_to, period=period)
+        result = export_csv(_root(root), kind=kind, output=output, start=start, end=end, excel=excel, force=force)
+    except FileExistsError as exc:
+        typer.echo(f"ERROR: {exc}\n上書きする場合は --force を指定してください", err=True)
+        raise typer.Exit(code=4) from exc
+    except (ExportError, OSError, ValueError) as exc:
+        typer.echo(f"ERROR: CSV出力に失敗しました: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    typer.echo(f"CSV出力｜{result['encoding']}")
+    for item in result["files"]:
+        typer.echo(f"{item['type']}: {item['path']} ({item['rows']}件)")
+
+
+@notifications_app.command("check")
+def notifications_check(
+    date: str | None = DateOption,
+    time_value: str | None = typer.Option(None, "--time", help="判定時刻 HH:MM"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="候補表示のみで送信・履歴保存を行わない"),
+    root: Path | None = RootOption,
+) -> None:
+    """振り返り、指示書承認、期限、Main、最低限の通知条件を評価します。"""
+    base, day = _root(root), _day(date)
+    try:
+        config = load_notification_config(base)
+        current = parse_current(day, time_value)
+        values = evaluate_notifications(base, day=day, current=current, config=config)
+    except (NotificationError, TaskQueryError, OSError, ValueError) as exc:
+        typer.echo(f"ERROR: 通知条件を評価できません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    typer.echo(f"通知チェック｜{day} {current.strftime('%H:%M')}")
+    if not values:
+        typer.echo("送信すべき通知はありません。")
+        return
+    for item in values:
+        typer.echo(f"- [{item.notification_type}] {item.message}")
+    if dry_run:
+        typer.echo(f"dry-run: {len(values)}件の候補を表示し、送信・履歴保存は行いませんでした。")
+        return
+    senders = []
+    if config["console"]["enabled"]:
+        senders.append(ConsoleSender(typer.echo))
+    if config["file"]["enabled"]:
+        senders.append(FileSender(base))
+    try:
+        result = dispatch_notifications(base, values, current=current, config=config, senders=senders)
+    except (NotificationError, OSError, ValueError) as exc:
+        typer.echo(f"ERROR: 通知履歴を保存できません: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+    typer.echo(f"送信: {result['sent']}件 / 重複スキップ: {result['skipped']}件 / 失敗: {result['failed']}件")
+    if result["failed"]:
+        typer.echo("WARN: 一部通知に失敗しました。日次データは変更していません。", err=True)
+
+
+@notifications_app.command("history")
+def notifications_history(
+    json_output: bool = typer.Option(False, "--json", help="機械可読JSONで表示"),
+    limit: int = typer.Option(50, "--limit", min=1, max=500),
+    root: Path | None = RootOption,
+) -> None:
+    """通知の送信・失敗履歴を新しい順で表示します。"""
+    try:
+        values = list(reversed(load_notification_history(_root(root))["records"]))[:limit]
+    except (NotificationError, OSError, ValueError) as exc:
+        typer.echo(f"ERROR: 通知履歴を読み込めません: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    if json_output:
+        typer.echo(json.dumps({"records": values}, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"通知履歴｜{len(values)}件")
+    if not values:
+        typer.echo("通知履歴はありません。")
+        return
+    for item in values:
+        typer.echo(f"- {item.get('attempted_at', '未記録')} [{item.get('status', '不明')}] {item.get('notification_type', '不明')} -> {item.get('destination', '不明')}")
 
 
 def _goal_error(message: str, *, code: int = 2) -> None:
@@ -2806,14 +2949,88 @@ def _print_draft_review(draft: dict[str, Any], day: str) -> None:
 
 @app.command("review")
 def review(
+    mode: str | None = typer.Argument(None, help="quick を指定すると日次レビューを簡単入力"),
     date: str | None = DateOption,
     json_output: bool = typer.Option(False, "--json", help="ドラフトJSONをそのまま表示する"),
     dry_run: bool = typer.Option(False, "--dry-run", help="表示のみでファイルを変更しない"),
+    done: list[str] = typer.Option([], "--done", help="今日できたこと。複数指定可"),
+    not_done: list[str] = typer.Option([], "--not-done", help="できなかったこと。複数指定可"),
+    cause: list[str] = typer.Option([], "--cause", help="崩れた原因。複数指定可"),
+    tomorrow: list[str] = typer.Option([], "--tomorrow", help="明日やること。入力順の上位3件をMain候補にする"),
+    minimum: list[str] = typer.Option([], "--minimum", help="明日の最低限。複数指定可"),
+    journal: str | None = typer.Option(None, "--journal", help="任意の日記（改行可）"),
+    stdin: bool = typer.Option(False, "--stdin", help="標準入力からクイックレビューJSONを読み込む"),
+    force: bool = typer.Option(False, "--force", help="同日レビューをバックアップ後に更新"),
     root: Path | None = RootOption,
 ) -> None:
-    """整理ドラフトを確認用に表示します。"""
+    """整理ドラフトを表示します。`review quick`で簡単入力できます。"""
     base = _root(root)
     day = _day(date)
+    if mode is not None:
+        if mode != "quick":
+            typer.echo("ERROR: reviewのモードは quick のみ指定できます", err=True)
+            raise typer.Exit(code=2)
+        option_used = any((done, not_done, cause, tomorrow, minimum, journal is not None))
+        if stdin and option_used:
+            typer.echo("ERROR: --stdinと個別入力オプションは同時に指定できません", err=True)
+            raise typer.Exit(code=2)
+        raw_input = ""
+        try:
+            if stdin:
+                raw_input = sys.stdin.read()
+                if not raw_input.strip():
+                    raise QuickReviewError("標準入力が空です")
+                payload = json.loads(raw_input)
+            elif option_used:
+                payload = {"date": day, "done": done, "not_done": not_done, "causes": cause, "tomorrow": tomorrow, "minimum": minimum, "journal": journal or ""}
+                raw_input = json.dumps(payload, ensure_ascii=False, indent=2)
+            else:
+                payload = {
+                    "date": day,
+                    "done": [value] if (value := typer.prompt("今日できたこと", default="", show_default=False)) else [],
+                    "not_done": [value] if (value := typer.prompt("できなかったこと", default="", show_default=False)) else [],
+                    "causes": [value] if (value := typer.prompt("崩れた原因", default="", show_default=False)) else [],
+                    "tomorrow": [value] if (value := typer.prompt("明日やること", default="", show_default=False)) else [],
+                    "minimum": [value] if (value := typer.prompt("明日の最低限", default="", show_default=False)) else [],
+                    "journal": typer.prompt("日記（任意）", default="", show_default=False),
+                }
+                raw_input = json.dumps(payload, ensure_ascii=False, indent=2)
+            normalized = normalize_quick_payload(payload, day=day)
+            planned = build_quick_entry(day, normalized, load_daily(base, day))
+        except json.JSONDecodeError as exc:
+            typer.echo(f"ERROR: 標準入力のJSONが不正です: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        except (QuickReviewError, OSError, ValueError) as exc:
+            typer.echo(f"ERROR: {exc}", err=True)
+            raise typer.Exit(code=2) from exc
+        if json_output and dry_run:
+            typer.echo(json.dumps({"date": day, "dry_run": True, "entry": planned}, ensure_ascii=False, indent=2))
+            return
+        elif dry_run:
+            typer.echo(f"daily-review review quick｜dry-run｜{day}")
+            typer.echo(f"完了: {len(normalized['done'])}件 / 未完了: {len(normalized['not_done'])}件")
+            typer.echo(f"明日のMain候補: {len(planned['tomorrow_plan_proposal']['main'])}件 / 保留: {len(planned['quick_review']['backlog_candidates'])}件")
+            typer.echo("保存は行いませんでした")
+            return
+        try:
+            result = save_quick_review(base, day, normalized, raw_input=raw_input, force=force)
+        except QuickReviewError as exc:
+            typer.echo(f"ERROR: {exc}", err=True)
+            raise typer.Exit(code=4) from exc
+        except OSError as exc:
+            raw_saved = inbox_path(base, day).exists()
+            detail = "原入力はinboxに保存済みです。" if raw_saved else "原入力の保存にも失敗しました。"
+            typer.echo(f"ERROR: クイックレビューを完了できません: {exc}\n{detail}", err=True)
+            raise typer.Exit(code=4) from exc
+        if json_output:
+            typer.echo(json.dumps({"date": day, "dry_run": False, "input_id": result["input_id"], "entry": result["entry"]}, ensure_ascii=False, indent=2))
+        else:
+            typer.echo("クイックレビューを保存しました")
+            typer.echo(f"日付: {day}")
+            typer.echo(f"入力ID: {result['input_id']}")
+            typer.echo(f"明日のMain候補: {len(result['entry']['tomorrow_plan_proposal']['main'])}件")
+            typer.echo(f"次の操作: daily-review approve-plan --date {day}")
+        return
     draft = _draft_or_error(base, day)
     if json_output:
         typer.echo(json.dumps(draft, ensure_ascii=False, indent=2))
@@ -4068,7 +4285,7 @@ def release_check(root: Path | None = RootOption) -> None:
         "home", "summary", "start", "next", "doctor", "weekly", "monthly", "backup", "restore",
         "chat", "chat-prompt", "chat-import", "handoff", "receive", "handoff-list", "handoff-cancel",
         "input", "organize", "review", "edit-draft", "approve", "reflect", "migrate", "v11-check", "v12-check",
-        "goal", "plan",
+        "goal", "plan", "tasks", "export", "notifications",
     }
     missing_commands = sorted(required_commands - command_names)
     if missing_commands:
@@ -4102,12 +4319,21 @@ def release_check(root: Path | None = RootOption) -> None:
         errors.append("goal schemaまたはstorageがありません")
     if not (source_root / "config" / "priorities.example.json").is_file():
         errors.append("config/priorities.example.json がありません")
+    if not (source_root / "config" / "notifications.example.json").is_file():
+        errors.append("config/notifications.example.json がありません")
     for name in ("README.md", "CHANGELOG.md", "RELEASE_CHECKLIST.md", "RELEASE_CHECKLIST_V1.2.md", "tests/test_v11_e2e.py"):
         if not (source_root / name).is_file():
             errors.append(f"リリース必須ファイルがありません: {name}")
     try:
         ignored = (source_root / ".gitignore").read_text(encoding="utf-8")
-        if not all(value in ignored for value in ("data/", "logs/", "config/priorities.json")):
+        ignored_runtime_paths = (
+            "data/",
+            "logs/",
+            "config/priorities.json",
+            "config/notifications.json",
+            "exports/",
+        )
+        if not all(value in ignored for value in ignored_runtime_paths):
             errors.append("実行時データまたは設定のGit除外が不足しています")
     except OSError:
         errors.append(".gitignoreを読み込めません")
@@ -4147,6 +4373,7 @@ def release_check(root: Path | None = RootOption) -> None:
     typer.echo("OK   v12 readiness check")
     typer.echo("OK   v1.2 final migration")
     typer.echo("OK   runtime data ignored by git")
+    typer.echo("OK   v1.3 task, export, and notification foundations")
     typer.echo("v1.2.0 is ready")
 
 

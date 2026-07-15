@@ -13,6 +13,7 @@ from .planning import PlanningError, _validate_ref, validate_daily_plan, validat
 from .evaluation import EvaluationError, validate_evaluation
 from .replan import ReplanError, validate_replan
 from .goal_design import GoalDesignError, load_design
+from .notifications import NotificationError, load_history as load_notification_history, load_notification_config
 from .session import SESSION_STATUSES
 from .storage import (
     CHAT_IMPORT_PROMPT_NAME,
@@ -419,12 +420,27 @@ def run_doctor(root: Path) -> dict[str, Any]:
         checks.append("replan history")
 
     try:
+        load_notification_config(root)
+        load_notification_history(root)
+    except (NotificationError, OSError, ValueError) as exc:
+        issues.append(_issue("ERROR", f"通知設定または履歴が不正です: {exc}"))
+    else:
+        checks.append("notification config and history")
+
+    try:
         source_root = Path(__file__).resolve().parents[2]
         gitignore = (source_root / ".gitignore").read_text(encoding="utf-8")
-        if all(value in gitignore for value in ("data/", "logs/", "config/priorities.json")):
+        ignored_runtime_paths = (
+            "data/",
+            "logs/",
+            "config/priorities.json",
+            "config/notifications.json",
+            "exports/",
+        )
+        if all(value in gitignore for value in ignored_runtime_paths):
             checks.append("runtime data ignored by git")
         else:
-            issues.append(_issue("WARN", "実行時データまたは優先順位設定のGit除外を確認できません"))
+            issues.append(_issue("WARN", "実行時データまたは個人設定のGit除外を確認できません"))
     except OSError:
         issues.append(_issue("WARN", ".gitignoreを読み込めません"))
     return {"root": root, "daily_count": len(daily_files), "issues": issues, "checks": checks}

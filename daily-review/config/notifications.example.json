@@ -1,0 +1,20 @@
+{
+  "enabled": true,
+  "console": {
+    "enabled": true
+  },
+  "file": {
+    "enabled": true
+  },
+  "reminder_review": {
+    "enabled": true,
+    "time": "21:00"
+  },
+  "instruction_approval": {
+    "enabled": true
+  },
+  "task_alerts": {
+    "enabled": true
+  },
+  "deduplication_hours": 24
+}

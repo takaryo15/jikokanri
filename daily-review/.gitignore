@@ -7,6 +7,8 @@ data/
 logs/
 backups/
 config/priorities.json
+config/notifications.json
+exports/
 *.zip
 .venv-release-test/
 .DS_Store

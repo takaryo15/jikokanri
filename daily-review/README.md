@@ -1,6 +1,6 @@
 # daily-review
 
-`daily-review` は、毎日の振り返り、翌日の指示書、実行結果、目標ロードマップをローカルのJSONとMarkdownに残すPython CLIです。v1.2.0では、目標を週次・日次計画へ接続し、評価と再計画を明示承認付きで扱います。
+`daily-review` は、毎日の振り返り、翌日の指示書、実行結果、目標ロードマップをローカルのJSONとMarkdownに残すPython CLIです。正式版はv1.2.0で、v1.3の実運用UXを開発中です。目標を週次・日次計画へ接続し、評価と再計画を明示承認付きで扱います。
 
 ## v1でできること
 
@@ -266,6 +266,68 @@ daily-review handoff-cancel --date 2026-07-14 --latest
 
 `receive` はsession ID、対象日、prompt hash、有効期限、受信履歴、日次データの有無を検証します。期限切れを意図的に確認するときだけ `--allow-expired` を使えます。未承認ドラフトの置換だけは `--force` で可能ですが、確定済み日次・別日・異なるsession ID・異なるprompt hashは常に拒否されます。
 
+## v1.3 開発中: 実運用UX、CSV、通知基盤
+
+### タスク一覧
+
+日次の提案・確定指示書とv1.2の目標日次計画を、元データを書き換えず共通形式で一覧にします。通常は完了済みを除外し、期限超過、今日期限、Main、高優先度の順に表示します。`--detail`で参照元や作成・更新日時も確認できます。
+
+```bash
+daily-review tasks list
+daily-review tasks list --due overdue
+daily-review tasks list --main
+daily-review tasks list --minimum
+daily-review tasks list --status completed
+daily-review tasks list --format json
+```
+
+`--status`、`--priority`、`--category`、`--due`、`--main`、`--minimum`はAND条件です。完了済みを含む全件は`--all`で表示します。
+
+### クイックレビュー
+
+対話形式、個別オプション、JSON標準入力のいずれかで、夜の入力を短く完了できます。保存前の確認だけなら`--dry-run`を使います。
+
+```bash
+daily-review review quick
+daily-review review quick --date 2026-07-15
+daily-review review quick --done "自己管理システムの開発を進めた" --tomorrow "院試過去問を進める" --minimum "1問解く"
+daily-review review quick --dry-run
+echo '{"date":"2026-07-15","done":["開発"],"tomorrow":["院試"],"minimum":["1問"]}' | daily-review review quick --stdin
+```
+
+原入力は先に`data/inbox/YYYY-MM-DD.json`へ保存し、整形済みレビューと翌日の未承認指示書案を`data/daily/YYYY-MM-DD.json`、Markdownを`logs/YYYY-MM-DD.md`へ保存します。整形済み保存が失敗しても、保存済み原入力は残ります。同日のレビューは通常拒否し、意図的に更新する場合だけ`--force`を指定します。更新前の日次JSONは`data/backups/daily/`へ退避されます。
+
+明日やることが4件以上なら入力順の先頭3件をMain候補とし、残りは`backlog_candidates`へ保持します。確定版への自動承認は行いません。
+
+### CSVエクスポート
+
+レビュー、タスク、指示書を固定列・安定した行順でCSVに出力します。配列は可逆なJSON文字列です。標準はUTF-8、`--excel`はUTF-8 BOM付きです。
+
+```bash
+daily-review export csv --type tasks
+daily-review export csv --type reviews --from 2026-07-01 --to 2026-07-31
+daily-review export csv --type reviews --period week --date 2026-07-15
+daily-review export csv --type all --output exports/
+daily-review export csv --type tasks --excel --output exports/tasks.csv
+```
+
+デフォルト出力は単一種別が`exports/<type>.csv`、`all`が`exports/csv/`です。既存ファイルは上書きせず、更新する場合だけ`--force`を使います。ユーザー入力が`=`、`+`、`-`、`@`で始まるセルには先頭へアポストロフィを付け、表計算ソフトの数式実行を防ぎます。週指定は既存仕様どおり火曜開始・月曜終了です。
+
+### 通知チェック
+
+通知は自動スケジューラーではなく、安全に呼び出せる判定・送信基盤です。振り返り未実施、指示書案・未承認・確定、期限超過、Main未完了、最低限未完了を判定し、ConsoleとJSONファイルへ送信できます。
+
+```bash
+daily-review notifications check
+daily-review notifications check --dry-run
+daily-review notifications check --date 2026-07-15 --time 21:30 --dry-run
+daily-review notifications history
+```
+
+設定例は`config/notifications.example.json`です。個人設定は同じ形式で`config/notifications.json`へ置きます。設定がない旧環境では安全な組み込みデフォルトを使用し、未知の設定項目は無視します。送信履歴は`data/notifications/history.json`、File送信結果は`data/notifications/events/`に原子的に保存します。同じ通知種別・対象日・対象データ・送信先は、安定したキーにより既定24時間重複送信しません。通知失敗は履歴へ残しますが、日次データは変更しません。
+
+現フェーズでは外部通知サービス、自動スケジューラー、ChatGPT APIによる自動解析は実装していません。
+
 ## 設計思想
 
 - 生ログは加工せず保存します。
@@ -459,11 +521,15 @@ data/evaluations/monthly/YYYY-MM.json
 data/replans/replan-xxxxxxxx.json
 data/goal-designs/design-xxxxxxxx.json
 data/transactions/transaction-xxxxxxxxxxxx.json
+data/notifications/history.json
+data/notifications/events/notification-xxxxxxxxxxxx.json
 logs/YYYY-MM-DD.md
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
 logs/monthly_YYYY-MM.md
 templates/
 config/priorities.json
+config/notifications.json
+exports/
 backups/
 ```
 
@@ -475,6 +541,10 @@ backups/
 - `handoffs`: ChatGPTとの受け渡し情報
 - `sessions`: 進行状態
 - `backups`: 上書き前の退避
+- `notifications`: 通知イベントと送信履歴
+- `exports`: CSVのデフォルト出力先（Git管理外）
+
+`config/notifications.example.json`は通知設定の配布用サンプルです。個人用の`config/notifications.json`はGit管理しません。
 
 ドラフト承認で保存する当日の候補・分類結果は、既存の `structured_review` と `tomorrow_plan_proposal` に反映します。確定版タスクに紐付かない当日結果、問題、未分類などは、後方互換な任意フィールド `draft_approval` に保存します。
 
@@ -506,11 +576,11 @@ backups/
 
 ## v1で実装しないもの
 
-外部サービス連携、通知、LLM呼び出し、自動承認、自動計画変更はv1の対象外です。
+外部サービス連携、通知の自動スケジュール実行、LLM呼び出し、自動承認、自動計画変更はv1の対象外です。v1.3開発版の通知はConsole/Fileへの明示実行だけです。
 
 ## 今後の候補
 
-将来の候補として、データのエクスポート、運用テンプレートの追加、より詳細なローカル分析があります。いずれもv1では自動実行しません。
+将来の候補として、週次・月次の集計CSV、外部通知sender、自動スケジューラー、運用テンプレートの追加、より詳細なローカル分析があります。いずれも自動実行しません。
 
 ## 開発・テスト
 
@@ -527,4 +597,4 @@ daily-review --version
 daily-review --version
 ```
 
-現在のv1リリースは `1.0.0` です。
+現在の正式リリースは `1.2.0` です。v1.3の機能は`CHANGELOG.md`のUnreleasedとして開発中です。
