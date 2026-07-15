@@ -15,7 +15,16 @@ import typer
 from pydantic import ValidationError
 
 from . import __version__
-from .archive import create_backup, restore_backup
+from .archive import (
+    create_backup,
+    delete_backup_files,
+    inspect_backup,
+    list_backups,
+    plan_backup,
+    prune_backups,
+    restore_backup,
+    verify_backup,
+)
 from .chat_import import backup_unapproved_draft, build_draft as build_chat_import_draft, import_hash
 from .chat_schema import ChatSchemaError, extract_json as extract_chat_json, validate_payload as validate_chat_payload
 from .chat_workflow import build_dynamic_prompt, chat_home_next_command, load_priorities, workflow_state
@@ -93,6 +102,15 @@ from .notifications import (
 from .command_api import CommandExecutor, load_audit_history
 from .command_models import COMMAND_MODELS, ApiIssue, CommandRequest, CommandResponse
 from .review_normalizer import NormalizationError, normalize_review
+from .recovery import apply_restore, preview_restore, restore_history
+from .rollover import apply_rollover, preview_rollover, rollover_history
+from .integrity import (
+    apply_integrity_repair,
+    preview_integrity_repair,
+    repair_history,
+    run_integrity_check,
+)
+from .operation_lock import OperationLockedError
 
 
 app = typer.Typer(
@@ -112,6 +130,9 @@ export_app = typer.Typer(help="保存済みデータを分析用ファイルへ�
 notifications_app = typer.Typer(help="通知候補の判定、送信、履歴確認を行います。")
 api_app = typer.Typer(help="ChatGPTや外部プログラム向けのversioned JSON Command APIです。")
 parse_app = typer.Typer(help="自然言語を安全な構造へルールベースで正規化します。")
+backup_app = typer.Typer(help="検証可能なZIPバックアップを作成・管理します。", invoke_without_command=True)
+rollover_app = typer.Typer(help="未完了タスクを複製せず翌日の計画へ引き継ぎます。")
+doctor_app = typer.Typer(help="保存構造の点検と安全な修復を行います。", invoke_without_command=True)
 app.add_typer(goal_app, name="goal")
 app.add_typer(plan_app, name="plan")
 goal_app.add_typer(milestone_app, name="milestone")
@@ -124,6 +145,9 @@ app.add_typer(export_app, name="export")
 app.add_typer(notifications_app, name="notifications")
 app.add_typer(api_app, name="api")
 app.add_typer(parse_app, name="parse")
+app.add_typer(backup_app, name="backup")
+app.add_typer(rollover_app, name="rollover")
+app.add_typer(doctor_app, name="doctor")
 
 
 @app.callback()
@@ -4389,53 +4413,8 @@ def weekly(
         typer.echo("集計対象なし")
 
 
-@app.command()
-def backup(
-    root: Path | None = RootOption,
-    output: Path | None = typer.Option(None, "--output", help="出力ZIP、または出力先ディレクトリ"),
-) -> None:
-    """data、logs、templates をZIPバックアップします。"""
-    base = _root(root)
-    try:
-        path, manifest = create_backup(base, output)
-    except (OSError, ValueError) as exc:
-        typer.echo(f"バックアップできませんでした: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-    typer.echo(f"バックアップを作成しました: {path}")
-    typer.echo(f"ファイル数: {manifest['file_count']}")
-
-
-@app.command()
-def restore(
-    backup_file: Path = typer.Argument(..., help="backup コマンドで作成したZIPファイル"),
-    root: Path | None = RootOption,
-    dry_run: bool = typer.Option(False, "--dry-run", help="復元内容だけを表示し、書き込みません。"),
-    force: bool = typer.Option(False, "--force", help="競合前に安全バックアップを作成してから上書きします。"),
-) -> None:
-    """検証済みバックアップを安全に復元します。"""
-    base = _root(root)
-    try:
-        result = restore_backup(base, backup_file, dry_run=dry_run, force=force)
-    except (OSError, ValueError) as exc:
-        typer.echo(f"復元できませんでした: {exc}", err=True)
-        raise typer.Exit(code=1) from exc
-    typer.echo("復元前確認" if dry_run else "復元しました")
-    typer.echo(f"復元予定ファイル: {len(result['files'])}件")
-    typer.echo(f"新規作成: {len(result['new_files'])}件")
-    typer.echo(f"競合: {len(result['conflicts'])}件")
-    typer.echo(f"スキップ: {len(result['skipped'])}件")
-    if result["conflicts"]:
-        for name in result["conflicts"]:
-            typer.echo(f"- {name}")
-    if dry_run:
-        typer.echo("dry-runのため書き込んでいません。")
-    elif result.get("safety_backup"):
-        typer.echo(f"上書き前バックアップ: {result['safety_backup']}")
-
-
-@app.command()
-def doctor(root: Path | None = RootOption) -> None:
-    """保存構造とJSONを読み取り専用で点検します。"""
+def _legacy_doctor(root: Path | None) -> None:
+    """Keep the established human-readable v1 doctor output."""
     report = run_doctor(_root(root))
     errors = [item for item in report["issues"] if item["level"] == "ERROR"]
     warnings = [item for item in report["issues"] if item["level"] == "WARN"]
@@ -4459,6 +4438,453 @@ def doctor(root: Path | None = RootOption) -> None:
         raise typer.Exit(code=1)
 
 
+def _backup_create_output(
+    base: Path,
+    output: Path | None,
+    *,
+    dry_run: bool,
+    output_format: str,
+    idempotency_key: str | None = None,
+) -> None:
+    plan = plan_backup(base, output)
+    if dry_run:
+        result = {
+            "status": "dry_run",
+            "output": str(plan["output"]),
+            "file_count": plan["file_count"],
+            "estimated_size": plan["estimated_size"],
+            "files": [name for name, _ in plan["members"]],
+            "excluded": plan["excluded"],
+        }
+    else:
+        path, manifest = create_backup(base, output, idempotency_key=idempotency_key)
+        result = {
+            "status": "created",
+            "path": str(path),
+            "backup_id": manifest["backup_id"],
+            "file_count": manifest["file_count"],
+            "total_size": manifest["total_size"],
+            "verified": True,
+        }
+    if output_format == "json":
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if dry_run:
+        typer.echo("バックアップ作成｜dry-run")
+        typer.echo(f"出力予定: {result['output']}")
+        typer.echo(f"対象: {result['file_count']}件 / {result['estimated_size']} bytes")
+        for name in result["files"]:
+            typer.echo(f"INCLUDE {name}")
+        for item in result["excluded"]:
+            typer.echo(f"EXCLUDE {item['path']} ({item['reason']})")
+        typer.echo("バックアップファイルは作成していません")
+    else:
+        typer.echo(f"バックアップを作成しました: {result['path']}")
+        typer.echo(f"backup_id: {result['backup_id']}")
+        typer.echo(f"ファイル数: {result['file_count']}")
+        typer.echo("検証: OK")
+
+
+@backup_app.callback()
+def backup_legacy(
+    ctx: typer.Context,
+    root: Path | None = RootOption,
+    output: Path | None = typer.Option(
+        None, "--output", help="旧形式互換: 出力ZIPまたはディレクトリ"
+    ),
+) -> None:
+    """サブコマンドなしでは従来どおりフルバックアップを作成します。"""
+    if ctx.invoked_subcommand is not None:
+        return
+    try:
+        _backup_create_output(_root(root), output, dry_run=False, output_format="text")
+    except (OSError, ValueError, OperationLockedError) as exc:
+        typer.echo(f"バックアップできませんでした: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@backup_app.command("create")
+def backup_create_command(
+    root: Path | None = RootOption,
+    output: Path | None = typer.Option(
+        None, "--output", help="出力ZIPまたはディレクトリ"
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="対象と除外だけを表示し、ZIPを作成しません"
+    ),
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key"),
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+) -> None:
+    """data、logs、templates、秘密情報を除いたconfigをZIPへ保存します。"""
+    if output_format not in {"text", "json"}:
+        raise typer.BadParameter("--formatはtextまたはjsonにしてください")
+    try:
+        _backup_create_output(
+            _root(root),
+            output,
+            dry_run=dry_run,
+            output_format=output_format,
+            idempotency_key=idempotency_key,
+        )
+    except (OSError, ValueError, OperationLockedError) as exc:
+        if output_format == "json":
+            typer.echo(
+                json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+            )
+        else:
+            typer.echo(f"バックアップできませんでした: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+@backup_app.command("list")
+def backup_list_command(
+    root: Path | None = RootOption,
+    directory: Path | None = typer.Option(None, "--directory"),
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+) -> None:
+    """バックアップを検証状態・件数・versionとともに一覧表示します。"""
+    values = list_backups(_root(root), directory)
+    if output_format == "json":
+        typer.echo(json.dumps({"backups": values}, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"バックアップ一覧｜{len(values)}件")
+    for item in values:
+        typer.echo(
+            f"- {item['backup_id']} {item.get('created_at', '未記録')} {'OK' if item['verified'] else 'ERROR'} {item['path']}"
+        )
+
+
+@backup_app.command("inspect")
+def backup_inspect_command(
+    backup_file: Path = typer.Argument(...),
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+) -> None:
+    """ZIPを展開せずmanifestを表示します。"""
+    try:
+        manifest, _ = inspect_backup(backup_file)
+    except (OSError, ValueError) as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    if output_format == "json":
+        typer.echo(json.dumps(manifest, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"backup_id: {manifest.get('backup_id', backup_file.stem)}")
+    typer.echo(f"created_at: {manifest.get('created_at', '未記録')}")
+    typer.echo(f"app_version: {manifest.get('app_version', '未記録')}")
+    typer.echo(f"file_count: {manifest.get('file_count', 0)}")
+
+
+@backup_app.command("verify")
+def backup_verify_command(
+    backup_file: Path = typer.Argument(...),
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+) -> None:
+    """manifest、SHA-256、不正パス、symlink、展開サイズを検証します。"""
+    try:
+        result = verify_backup(backup_file)
+    except (OSError, ValueError) as exc:
+        if output_format == "json":
+            typer.echo(
+                json.dumps({"valid": False, "error": str(exc)}, ensure_ascii=False)
+            )
+        else:
+            typer.echo(f"バックアップ検証: ERROR ({exc})", err=True)
+        raise typer.Exit(code=3) from exc
+    if output_format == "json":
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    typer.echo("バックアップ検証: OK")
+    typer.echo(f"backup_id: {result['backup_id']}")
+    typer.echo(f"ファイル数: {result['file_count']}")
+
+
+@backup_app.command("delete")
+def backup_delete_command(
+    backup_file: Path | None = typer.Argument(None),
+    retention: bool = typer.Option(
+        False, "--retention", help="設定された世代管理の削除候補を対象にする"
+    ),
+    dry_run: bool = typer.Option(
+        True, "--dry-run/--apply", help="既定では削除候補だけを表示"
+    ),
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key"),
+    root: Path | None = RootOption,
+) -> None:
+    """手動バックアップを世代管理から除外し、確認後だけ削除します。"""
+    base = _root(root)
+    if retention:
+        candidates = prune_backups(base, dry_run=True)
+    elif backup_file is not None:
+        if dry_run or not idempotency_key:
+            verify_backup(backup_file)
+        candidates = [{"path": str(backup_file)}]
+    else:
+        raise typer.BadParameter("BACKUP_FILEまたは--retentionを指定してください")
+    result = None
+    if not dry_run:
+        result = delete_backup_files(
+            base,
+            [Path(item["path"]) for item in candidates],
+            idempotency_key=idempotency_key,
+        )
+    typer.echo("削除候補" if dry_run else "削除しました")
+    for item in candidates:
+        typer.echo(f"- {item['path']}")
+    if result and result["status"] == "idempotent_replay":
+        typer.echo("同じ削除結果を返しました（idempotent replay）")
+
+
+@app.command("restore")
+def restore_router(
+    operation_or_backup: str = typer.Argument(
+        ..., help="preview / apply / status、または旧形式のbackup ZIP"
+    ),
+    backup_file: Path | None = typer.Argument(
+        None, help="preview/apply対象のbackup ZIP"
+    ),
+    mode: str = typer.Option("merge", "--mode", help="merge / replace / missing-only"),
+    confirmation_token: str | None = typer.Option(None, "--confirmation-token"),
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key"),
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+    root: Path | None = RootOption,
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="旧形式restoreの書込みを行わない"
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="旧形式restoreで安全バックアップ後に上書き"
+    ),
+) -> None:
+    """復元preview/apply/statusと従来のrestore BACKUP_FILEを提供します。
+
+    previewで発行されたconfirmation tokenをapplyに渡してください。
+    apply前には現在状態を自動バックアップし、JSON出力にも対応します。
+    """
+    base = _root(root)
+    try:
+        if operation_or_backup == "status":
+            records = restore_history(base)
+            if output_format == "json":
+                typer.echo(
+                    json.dumps({"records": records}, ensure_ascii=False, indent=2)
+                )
+            else:
+                typer.echo(f"復元履歴｜{len(records)}件")
+                for item in records:
+                    typer.echo(
+                        f"- {item.get('restore_id')} {item.get('status')} {item.get('backup_id')}"
+                    )
+            return
+        if operation_or_backup == "preview":
+            if backup_file is None:
+                raise ValueError("restore previewにはBACKUP_FILEが必要です")
+            result = preview_restore(base, backup_file, mode=mode)
+            if output_format == "json":
+                typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+                return
+            typer.echo(f"復元preview｜{mode}")
+            for key in (
+                "added",
+                "updated",
+                "unchanged",
+                "skipped",
+                "conflicts",
+                "deleted",
+            ):
+                typer.echo(f"{key}: {result['counts'][key]}件")
+            typer.echo(f"confirmation token: {result['confirmation_token']}")
+            return
+        if operation_or_backup == "apply":
+            if backup_file is None:
+                raise ValueError("restore applyにはBACKUP_FILEが必要です")
+            if not confirmation_token:
+                raise ValueError("restore applyには--confirmation-tokenが必要です")
+            result = apply_restore(
+                base,
+                backup_file,
+                mode=mode,
+                confirmation_token=confirmation_token,
+                idempotency_key=idempotency_key,
+            )
+            typer.echo(
+                json.dumps(result, ensure_ascii=False, indent=2)
+                if output_format == "json"
+                else f"復元: {result['status']} / {result.get('restore_id', '再送')}"
+            )
+            return
+        legacy_file = Path(operation_or_backup)
+        result = restore_backup(base, legacy_file, dry_run=dry_run, force=force)
+    except (OSError, ValueError, OperationLockedError) as exc:
+        if output_format == "json":
+            typer.echo(
+                json.dumps({"status": "error", "error": str(exc)}, ensure_ascii=False)
+            )
+        else:
+            typer.echo(f"復元できませんでした: {exc}", err=True)
+        raise typer.Exit(
+            code=1 if operation_or_backup not in {"preview", "apply"} else 4
+        ) from exc
+    typer.echo("復元前確認" if dry_run else "復元しました")
+    typer.echo(f"復元予定ファイル: {len(result['files'])}件")
+    typer.echo(f"新規作成: {len(result['new_files'])}件")
+    typer.echo(f"競合: {len(result['conflicts'])}件")
+    typer.echo(f"スキップ: {len(result['skipped'])}件")
+    if dry_run:
+        typer.echo("dry-runのため書き込んでいません。")
+    elif result.get("safety_backup"):
+        typer.echo(f"上書き前バックアップ: {result['safety_backup']}")
+
+
+@rollover_app.command("preview")
+def rollover_preview_command(
+    date: str | None = DateOption,
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key"),
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+    root: Path | None = RootOption,
+) -> None:
+    """未完了候補、長期未完了警告、Main最大3件を保存せず提示します。"""
+    try:
+        result = preview_rollover(
+            _root(root), _day(date), idempotency_key=idempotency_key
+        )
+    except (OSError, ValueError, OperationLockedError) as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=3) from exc
+    if output_format == "json":
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"繰越preview｜{result['target_date']}")
+    for item in result["candidates"]:
+        typer.echo(
+            f"- [{item['decision']}] {item['title']} ({item['rollover_count_after']}回目)"
+        )
+    typer.echo(f"Main候補: {len(result['main_task_ids'])}件")
+    typer.echo(f"confirmation token: {result['confirmation_token']}")
+
+
+@rollover_app.command("apply")
+def rollover_apply_command(
+    date: str | None = DateOption,
+    confirmation_token: str = typer.Option(..., "--confirmation-token"),
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key"),
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+    root: Path | None = RootOption,
+) -> None:
+    """既存タスクへ計画日・元期限・繰越回数を追記し、複製しません。"""
+    try:
+        result = apply_rollover(
+            _root(root),
+            _day(date),
+            confirmation_token=confirmation_token,
+            idempotency_key=idempotency_key,
+        )
+    except (OSError, ValueError, OperationLockedError) as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+    typer.echo(
+        json.dumps(result, ensure_ascii=False, indent=2)
+        if output_format == "json"
+        else f"繰越: {result['status']} / {result.get('applied_count', 0)}件"
+    )
+
+
+@rollover_app.command("history")
+def rollover_history_command(
+    root: Path | None = RootOption,
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+) -> None:
+    """タスク単位の繰越前後状態と理由を表示します。"""
+    records = rollover_history(_root(root))
+    if output_format == "json":
+        typer.echo(json.dumps({"records": records}, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"繰越履歴｜{len(records)}件")
+    for item in records:
+        typer.echo(
+            f"- {item['target_date']} {item['task_id']} {item['rollover_count_before']} -> {item['rollover_count_after']}"
+        )
+
+
+@doctor_app.callback()
+def doctor_legacy(ctx: typer.Context, root: Path | None = RootOption) -> None:
+    """サブコマンドなしでは従来の読み取り専用doctorを実行します。"""
+    if ctx.invoked_subcommand is None:
+        _legacy_doctor(root)
+
+
+@doctor_app.command("check")
+def doctor_check_command(
+    root: Path | None = RootOption,
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+) -> None:
+    """JSON、task、指示書、API、通知、backup、lockを変更せず検査します。"""
+    report = run_integrity_check(_root(root))
+    if output_format == "json":
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(f"データ整合性｜{report['status'].upper()}")
+        for item in report["issues"]:
+            typer.echo(
+                f"{item['severity'].upper():8} {item['code']} {item['path']}: {item['message']}"
+            )
+        typer.echo(
+            " / ".join(
+                f"{key.upper()} {value}件" for key, value in report["counts"].items()
+            )
+        )
+    if report["status"] in {"error", "critical"}:
+        raise typer.Exit(code=3)
+
+
+@doctor_app.command("repair")
+def doctor_repair_command(
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="修復候補だけを表示し、変更しません"
+    ),
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key"),
+    root: Path | None = RootOption,
+) -> None:
+    """内容を捏造・削除せず、安全な既定値・Main超過だけを修復します。"""
+    try:
+        result = (
+            preview_integrity_repair(_root(root))
+            if dry_run
+            else apply_integrity_repair(_root(root), idempotency_key=idempotency_key)
+        )
+    except (OSError, ValueError, OperationLockedError) as exc:
+        typer.echo(f"ERROR: {exc}", err=True)
+        raise typer.Exit(code=4) from exc
+    if output_format == "json":
+        typer.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    typer.echo("整合性修復｜dry-run" if dry_run else f"整合性修復｜{result['status']}")
+    if dry_run:
+        typer.echo(f"修復可能: {result['fix_count']}件")
+        typer.echo(f"手動確認: {result['manual_count']}件")
+        typer.echo("変更は行っていません")
+    else:
+        typer.echo(f"修復: {result.get('fixed_count', 0)}件")
+        if result.get("backup_path"):
+            typer.echo(f"修復前バックアップ: {result['backup_path']}")
+
+
+@doctor_app.command("report")
+def doctor_report_command(
+    root: Path | None = RootOption,
+    output_format: str = typer.Option("text", "--format", help="text または json"),
+) -> None:
+    """安全修復の履歴を表示します。"""
+    records = repair_history(_root(root))
+    if output_format == "json":
+        typer.echo(json.dumps({"records": records}, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"修復履歴｜{len(records)}件")
+    for item in records:
+        typer.echo(
+            f"- {item['repair_id']} {item['status']} fixed={item['fixed_count']}"
+        )
+
+
 @app.command("release-check")
 def release_check(root: Path | None = RootOption) -> None:
     """v1.2.0 正式リリースに必要な静的条件を読み取り専用で確認します。"""
@@ -4479,14 +4905,14 @@ def release_check(root: Path | None = RootOption) -> None:
         "home", "summary", "start", "next", "doctor", "weekly", "monthly", "backup", "restore",
         "chat", "chat-prompt", "chat-import", "handoff", "receive", "handoff-list", "handoff-cancel",
         "input", "organize", "review", "edit-draft", "approve", "reflect", "migrate", "v11-check", "v12-check",
-        "goal", "plan", "tasks", "export", "notifications", "api", "parse",
+        "goal", "plan", "tasks", "export", "notifications", "api", "parse", "rollover",
     }
     missing_commands = sorted(required_commands - command_names)
     if missing_commands:
         errors.append("主要コマンドが登録されていません: " + ", ".join(missing_commands))
     from .chat_schema import SCHEMA_VERSION
     from .handoff import HANDOFF_VERSION
-    from .migration import EVALUATION_MIGRATION_ID, FINAL_MIGRATION_ID, MIGRATION_ID, PLANNING_MIGRATION_ID, ROADMAP_MIGRATION_ID
+    from .migration import EVALUATION_MIGRATION_ID, FINAL_MIGRATION_ID, MIGRATION_ID, PLANNING_MIGRATION_ID, RECOVERY_MIGRATION_ID, ROADMAP_MIGRATION_ID
     from .storage import REQUIRED_TEMPLATE_NAMES
 
     for name in REQUIRED_TEMPLATE_NAMES + (CHAT_IMPORT_PROMPT_NAME,):
@@ -4506,6 +4932,8 @@ def release_check(root: Path | None = RootOption) -> None:
         errors.append("goal evaluation migration定義が不正です")
     if FINAL_MIGRATION_ID != "v1.2-final":
         errors.append("v1.2 final migration定義が不正です")
+    if RECOVERY_MIGRATION_ID != "v1.3-recovery-base":
+        errors.append("v1.3 recovery migration定義が不正です")
     for name in ("evaluation.py", "replan.py", "goal_coach.py", "goal_design.py", "v12_check.py"):
         if not (source_root / "src" / "daily_review" / name).is_file():
             errors.append(f"v1.2 rc1モジュールがありません: {name}")
@@ -4517,9 +4945,14 @@ def release_check(root: Path | None = RootOption) -> None:
         errors.append("config/notifications.example.json がありません")
     if not (source_root / "config" / "api.example.json").is_file():
         errors.append("config/api.example.json がありません")
+    if not (source_root / "config" / "recovery.example.json").is_file():
+        errors.append("config/recovery.example.json がありません")
     for name in ("command_models.py", "command_api.py", "review_normalizer.py"):
         if not (source_root / "src" / "daily_review" / name).is_file():
             errors.append(f"v1.3 Command APIモジュールがありません: {name}")
+    for name in ("recovery.py", "rollover.py", "integrity.py", "operation_lock.py"):
+        if not (source_root / "src" / "daily_review" / name).is_file():
+            errors.append(f"v1.3 recoveryモジュールがありません: {name}")
     for name in ("README.md", "CHANGELOG.md", "RELEASE_CHECKLIST.md", "RELEASE_CHECKLIST_V1.2.md", "tests/test_v11_e2e.py"):
         if not (source_root / name).is_file():
             errors.append(f"リリース必須ファイルがありません: {name}")
@@ -4531,6 +4964,7 @@ def release_check(root: Path | None = RootOption) -> None:
             "config/priorities.json",
             "config/notifications.json",
             "config/api.json",
+            "config/recovery.json",
             "exports/",
         )
         if not all(value in ignored for value in ignored_runtime_paths):
@@ -4575,6 +5009,7 @@ def release_check(root: Path | None = RootOption) -> None:
     typer.echo("OK   runtime data ignored by git")
     typer.echo("OK   v1.3 task, export, and notification foundations")
     typer.echo("OK   v1.3 command api and normalization foundations")
+    typer.echo("OK   v1.3 backup, restore, rollover, and integrity foundations")
     typer.echo("v1.2.0 is ready")
 
 

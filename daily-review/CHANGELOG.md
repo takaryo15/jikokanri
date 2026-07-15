@@ -4,6 +4,11 @@
 
 ### Added
 
+- manifest、size、SHA-256、件数、data versionを持つ検証可能なZIPバックアップと`backup create/list/inspect/verify/delete`。
+- restoreのmerge/replace/missing-only preview、stale検出付きconfirmation token、復元前自動バックアップ、復元履歴。
+- タスクを複製せず元期限と繰越回数を保持する`rollover preview/apply/history`、長期未完了警告・分解提案。
+- issue codeとseverityを返す`doctor check`、安全な修復だけを行う`doctor repair`、修復履歴。
+- ワークスペース単位のプロセスロック、stale lock回復、v1.3 recovery migrationと互換設定。
 - ChatGPTや外部プログラム向けのversioned Command APIとPydantic JSON Request/Response schema。
 - request・changes・state hashに結び付いたpreview/commit confirmation tokenと期限・stale検査。
 - commit再送を安全に返し、同一keyの内容変更を拒否する永続idempotency記録。
@@ -20,11 +25,15 @@
 
 ### Changed
 
+- 従来の`backup`、`restore BACKUP_FILE`、`doctor`を維持したままpreview-firstのサブコマンドを追加しました。
 - 通知設定がない旧環境は組み込みデフォルトを使い、既知項目だけを互換的に上書きするようにしました。
 - `doctor`と`release-check`へ通知設定・履歴、およびv1.3コマンド基盤の検査を追加しました。
 
 ### Safety
 
+- 復元・repair前の自動バックアップ、復元差分と状態hashの再検証、rollback可能な複数ファイル置換を追加しました。
+- バックアップから秘密情報候補・symlink・一時データ・再帰バックアップを除外し、Zip Slipとzip bomb相当を拒否します。
+- rolloverはcompleted/cancelled/blocked/never等を除外し、Main最大3件、元期限保持、同日再実行防止を保証します。
 - previewでは主要データを変更せず、commit時は確認token・request hash・state hashを再検証します。
 - 複数commandの主要保存を一時ファイルとrollback付きで一括置換し、曖昧なタスク候補を自動選択しません。
 - Mainの4件目以降と分類不能な自然文をoptional・backlog・unclassifiedへ保持します。

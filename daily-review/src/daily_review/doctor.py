@@ -73,6 +73,14 @@ def run_doctor(root: Path) -> dict[str, Any]:
                 issues.append(_issue("WARN", "data/handoffs がありません。daily-review handoff 実行時に自動作成されます"))
             elif relative.parts[:2] == ("data", "api"):
                 issues.append(_issue("WARN", f"{relative} がありません。daily-review api 実行時に自動作成されます"))
+            elif relative.parts[:2] in {
+                ("data", "restore"),
+                ("data", "backup"),
+                ("data", "rollover"),
+                ("data", "repairs"),
+                ("data", "notifications"),
+            }:
+                issues.append(_issue("WARN", f"{relative} がありません。対応コマンドの初回実行時に自動作成されます"))
             else:
                 issues.append(_issue("ERROR", f"必要なディレクトリがありません: {relative}"))
         elif not os.access(path, os.W_OK):

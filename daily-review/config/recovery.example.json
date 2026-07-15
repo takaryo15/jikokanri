@@ -1,0 +1,31 @@
+{
+  "backup": {
+    "enabled": true,
+    "directory": "backups",
+    "before_restore": true,
+    "before_repair": true,
+    "retention_count": 20,
+    "retention_days": 90,
+    "verify_after_create": true
+  },
+  "restore": {
+    "default_mode": "merge",
+    "confirmation_required": true,
+    "reject_stale_preview": true,
+    "auto_backup_before_apply": true
+  },
+  "rollover": {
+    "enabled": true,
+    "default_policy": "ask",
+    "warning_after_days": 3,
+    "split_suggestion_after_days": 5,
+    "main_exclusion_after_days": 7,
+    "max_automatic_rollovers": 7,
+    "preserve_original_due_date": true
+  },
+  "integrity": {
+    "check_before_backup": false,
+    "check_after_restore": true,
+    "auto_fix_safe_issues": false
+  }
+}

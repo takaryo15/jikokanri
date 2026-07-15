@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .models import DailyEntry, now_iso
+from .operation_lock import assert_workspace_writable
 
 
 DATA_DIRS = [
@@ -42,6 +43,16 @@ DATA_DIRS = [
     Path("data/api/audit"),
     Path("data/api/confirmations"),
     Path("data/api/idempotency"),
+    Path("data/backup"),
+    Path("data/backup/idempotency"),
+    Path("data/restore"),
+    Path("data/restore/idempotency"),
+    Path("data/rollover"),
+    Path("data/rollover/idempotency"),
+    Path("data/repairs"),
+    Path("data/repairs/idempotency"),
+    Path("data/notifications"),
+    Path("data/notifications/events"),
     Path("logs"),
     Path("templates"),
 ]
@@ -228,7 +239,9 @@ def resolve_root(root: Path | None = None) -> Path:
     current = Path.cwd().resolve()
 
     def is_project_root(path: Path) -> bool:
-        return (path / "pyproject.toml").is_file() and (path / "src" / "daily_review").is_dir()
+        return (path / "pyproject.toml").is_file() and (
+            path / "src" / "daily_review"
+        ).is_dir()
 
     if is_project_root(current):
         return current
@@ -265,7 +278,10 @@ def init_workspace(root: Path) -> tuple[list[Path], list[Path]]:
         existing.append(config)
     else:
         config.parent.mkdir(parents=True, exist_ok=True)
-        config.write_text(json.dumps(DEFAULT_PRIORITIES, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        config.write_text(
+            json.dumps(DEFAULT_PRIORITIES, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
         created.append(config)
     return created, existing
 
@@ -348,6 +364,7 @@ def load_or_create_daily(root: Path, day: str) -> dict[str, Any]:
 
 
 def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    assert_workspace_writable(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     DailyEntry.model_validate(payload)
     serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False)
@@ -372,6 +389,7 @@ def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def atomic_write_json_data(path: Path, payload: dict[str, Any]) -> None:
     """Atomically write a non-daily JSON document without applying DailyEntry validation."""
+    assert_workspace_writable(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False)
     fd, tmp_name = tempfile.mkstemp(
@@ -393,15 +411,23 @@ def atomic_write_json_data(path: Path, payload: dict[str, Any]) -> None:
             tmp_path.unlink()
 
 
-def atomic_write_json_data_many(writes: list[tuple[Path, dict[str, Any]]]) -> list[Path]:
+def atomic_write_json_data_many(
+    writes: list[tuple[Path, dict[str, Any]]],
+) -> list[Path]:
     """Atomically replace several generic JSON files, restoring on failure."""
+    for path, _ in writes:
+        assert_workspace_writable(path)
     prepared: list[tuple[Path, Path, bool, Path | None]] = []
     replaced: list[tuple[Path, bool, Path | None]] = []
     try:
         for path, payload in writes:
             path.parent.mkdir(parents=True, exist_ok=True)
-            serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False)
-            fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent), text=True)
+            serialized = json.dumps(
+                payload, ensure_ascii=False, indent=2, sort_keys=False
+            )
+            fd, tmp_name = tempfile.mkstemp(
+                prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent), text=True
+            )
             tmp_path = Path(tmp_name)
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
                 handle.write(serialized)
@@ -410,7 +436,9 @@ def atomic_write_json_data_many(writes: list[tuple[Path, dict[str, Any]]]) -> li
                 os.fsync(handle.fileno())
             backup_path: Path | None = None
             if path.exists():
-                backup_fd, backup_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".bak", dir=str(path.parent))
+                backup_fd, backup_name = tempfile.mkstemp(
+                    prefix=f".{path.name}.", suffix=".bak", dir=str(path.parent)
+                )
                 os.close(backup_fd)
                 backup_path = Path(backup_name)
                 shutil.copy2(path, backup_path)
@@ -436,6 +464,8 @@ def atomic_write_json_data_many(writes: list[tuple[Path, dict[str, Any]]]) -> li
 
 def atomic_write_text_many(writes: list[tuple[Path, str]]) -> list[Path]:
     """Atomically replace several UTF-8 files, restoring every target on failure."""
+    for path, _ in writes:
+        assert_workspace_writable(path)
     prepared: list[tuple[Path, Path, bool, Path | None]] = []
     replaced: list[tuple[Path, bool, Path | None]] = []
     try:
@@ -480,13 +510,17 @@ def atomic_write_text_many(writes: list[tuple[Path, str]]) -> list[Path]:
 
 
 def atomic_write_json_many(writes: list[tuple[Path, dict[str, Any]]]) -> list[Path]:
+    for path, _ in writes:
+        assert_workspace_writable(path)
     prepared: list[tuple[Path, Path, bool, Path | None]] = []
     replaced: list[tuple[Path, bool, Path | None]] = []
     try:
         for path, payload in writes:
             path.parent.mkdir(parents=True, exist_ok=True)
             DailyEntry.model_validate(payload)
-            serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False)
+            serialized = json.dumps(
+                payload, ensure_ascii=False, indent=2, sort_keys=False
+            )
             fd, tmp_name = tempfile.mkstemp(
                 prefix=f".{path.name}.",
                 suffix=".tmp",
@@ -540,6 +574,7 @@ def save_daily(root: Path, day: str, payload: dict[str, Any]) -> Path:
 
 
 def write_text(path: Path, content: str) -> Path:
+    assert_workspace_writable(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
     return path

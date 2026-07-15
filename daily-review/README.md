@@ -511,37 +511,54 @@ daily-review monthly --date 2026-07-14
 
 ## バックアップ
 
-`backup` は `data/`、`logs/`、`templates/` をZIPへ保存します。ソースコードや仮想環境は含めません。アーカイブにはファイル一覧、SHA-256、作成日時、形式バージョンを含む `manifest.json` が入ります。
+`backup create`は`data/`、`logs/`、`templates/`、秘密情報を除いた`config/`をZIPへ保存します。`.env`、token・secret・credentialを示す設定、`data/backups/`、一時ファイル、symlink、バックアップ自身は含めません。従来の`daily-review backup`も同じフルバックアップとして利用できます。
 
 ```bash
 daily-review backup
-daily-review backup --output /path/to/backups
-daily-review backup --output /path/to/daily-review.zip
+daily-review backup create
+daily-review backup create --dry-run
+daily-review backup create --output /path/to/backups --idempotency-key backup-2026-07-16
+daily-review backup list --format json
+daily-review backup inspect /path/to/backup.zip
+daily-review backup verify /path/to/backup.zip
+daily-review backup delete --retention --dry-run
+daily-review backup delete --retention --apply --idempotency-key retention-2026-07-16
 ```
 
-既定の保存先は `backups/daily-review-backup-YYYYMMDD-HHMMSS.zip` です。同名ファイルは上書きしません。元データは変更しません。
+既定の保存先は`backups/daily-review-backup-YYYYMMDDTHHMMSS+0900-ID.zip`です。同名ファイルは上書きしません。manifestにはbackup ID、app/data version、作成日時、件数、各ファイルのsizeとSHA-256が入ります。検証では重複パス、Zip Slip、symlink・特殊ファイル、異常な件数・展開サイズ・圧縮率も拒否します。`config/recovery.json`で自動バックアップの保持数・保持日数を設定でき、手動バックアップは自動削除しません。
 
 ## 復元
 
-まず内容だけを確認してください。
+既存の追加専用restoreは引き続き利用できます。v1.3では、通常は`restore preview`で追加・更新・競合・削除候補を確認し、発行されたtokenでapplyしてください。
 
 ```bash
 daily-review restore path/to/backup.zip --dry-run
+daily-review restore preview path/to/backup.zip --mode merge --format json
+daily-review restore apply path/to/backup.zip --mode merge \
+  --confirmation-token restore_confirm_xxx \
+  --idempotency-key restore-2026-07-16
+daily-review restore status --format json
 ```
 
-通常の復元は、対象ファイルが1件でも既存なら停止します。これにより既存データを無断で上書きしません。
+`merge`は現在存在しないファイルだけを追加し、内容が違う既存ファイルを競合として停止します。`missing-only`は既存ファイルをすべてスキップします。`replace`だけが更新・削除候補を適用しますが、秘密情報や復元・繰越・修復履歴は削除対象にしません。
+
+applyはZIPを再検証し、backup hash、mode、差分hash、現在状態hash、期限をtokenと照合します。staleなpreviewや未解決競合は拒否します。適用前には必ず現在状態を自動バックアップし、復元ファイルと履歴・idempotency記録をrollback可能な一括置換で保存します。
+
+詳細は[`docs/backup-and-restore.md`](docs/backup-and-restore.md)を参照してください。
+
+## 未完了タスクの繰越
+
+繰越はタスクをコピーせず、既存タスクへ`planned_date`、`original_due_date`、`rollover_count`などを追記します。completed、cancelled、archived、deleted、未解除blocked、someday、`rollover_policy: never`、対象日の指示書へ登録済みのタスクは除外します。
 
 ```bash
-daily-review restore path/to/backup.zip
+daily-review rollover preview --date 2026-07-16 --format json
+daily-review rollover apply --date 2026-07-16 \
+  --confirmation-token rollover_confirm_xxx \
+  --idempotency-key rollover-2026-07-16
+daily-review rollover history --format json
 ```
 
-意図的に上書きする必要がある場合だけ `--force` を指定できます。この場合は復元前に `backups/pre-restore-YYYYMMDD-HHMMSS.zip` を自動作成します。
-
-```bash
-daily-review restore path/to/backup.zip --force
-```
-
-復元前にZIP、manifest、形式バージョン、パス、SHA-256を検証します。不正なZIP、絶対パス、パストラバーサル、対象外パス、ハッシュ不一致は書き込み前に拒否します。
+3回目から見直し警告、5回目から分解提案、7回目から自動Main候補外とします。閾値は`config/recovery.json`で変更できます。Mainは優先順位設定を使って最大3件とし、残りはoptional候補です。最低限を縮小した場合は自動提案として表示し、元の最低限を上書きしません。詳細は[`docs/task-rollover.md`](docs/task-rollover.md)を参照してください。
 
 ## doctor
 
@@ -552,6 +569,18 @@ daily-review doctor
 ```
 
 `doctor` は採用した保存先ルート、書き込み可能性、火曜始まりの週、パッケージバージョンも表示します。`WARN` は不足したMarkdownなど、`ERROR` は読めないJSONや不正な計画を示します。古いJSONに新規フィールドがないことだけではエラーにしません。最後は問題なしで `daily-review doctor: OK`、警告ありで `daily-review doctor: WARNING`、重大な問題で `daily-review doctor: ERROR` を表示します。
+
+構造化された全データ検査と安全修復にはサブコマンドを使います。
+
+```bash
+daily-review doctor check
+daily-review doctor check --format json
+daily-review doctor repair --dry-run
+daily-review doctor repair --idempotency-key repair-2026-07-16
+daily-review doctor report --format json
+```
+
+issueには安定したcodeとinfo/warning/error/criticalのseverityが付きます。repair対象は、欠損updated_atの既存時刻による補完、Main超過分のoptional退避、負のrollover count、元期限保持、通知errorの「未記録」補完だけです。raw logの推測、競合解決、完了状態変更、タスク削除は行いません。実行前に自動バックアップし、履歴を`data/repairs/history.json`へ保存します。詳細は[`docs/data-integrity.md`](docs/data-integrity.md)を参照してください。
 
 ## release-check
 
@@ -590,6 +619,13 @@ data/api/tasks.json
 data/api/audit/audit-xxxxxxxx.json
 data/api/confirmations/confirm_xxxxxxxx.json
 data/api/idempotency/HASH.json
+data/backup/idempotency/HASH.json
+data/restore/history.json
+data/restore/idempotency/HASH.json
+data/rollover/history.json
+data/rollover/idempotency/HASH.json
+data/repairs/history.json
+data/repairs/idempotency/HASH.json
 logs/YYYY-MM-DD.md
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
 logs/monthly_YYYY-MM.md
@@ -597,6 +633,7 @@ templates/
 config/priorities.json
 config/notifications.json
 config/api.json
+config/recovery.json
 exports/
 backups/
 ```
@@ -611,9 +648,10 @@ backups/
 - `backups`: 上書き前の退避
 - `notifications`: 通知イベントと送信履歴
 - `api`: APIタスク、confirmation、idempotency、監査履歴
+- `restore` / `rollover` / `repairs`: preview-first操作の履歴と冪等性記録
 - `exports`: CSVのデフォルト出力先（Git管理外）
 
-`config/notifications.example.json`と`config/api.example.json`は配布用サンプルです。個人用の`config/notifications.json`と`config/api.json`はGit管理しません。
+`config/notifications.example.json`、`config/api.example.json`、`config/recovery.example.json`は配布用サンプルです。個人用の`config/notifications.json`、`config/api.json`、`config/recovery.json`はGit管理しません。
 
 ドラフト承認で保存する当日の候補・分類結果は、既存の `structured_review` と `tomorrow_plan_proposal` に反映します。確定版タスクに紐付かない当日結果、問題、未分類などは、後方互換な任意フィールド `draft_approval` に保存します。
 

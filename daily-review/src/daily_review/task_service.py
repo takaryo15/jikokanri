@@ -79,7 +79,11 @@ def _daily_tasks(root: Path) -> list[dict[str, Any]]:
                 source_day, str(index), _text(task.get("task"))
             )
             task_result = result_map.get(raw_id) or {}
-            status = _text(task_result.get("status")) or "pending"
+            status = (
+                _text(task_result.get("status"))
+                or _text(task.get("status"))
+                or "pending"
+            )
             main = _is_main(task, plan)
             title = _text(task.get("task")) or _text(task.get("title")) or "未設定"
             minimum = _text(task.get("minimum_line"))
@@ -137,11 +141,15 @@ def _goal_plan_tasks(root: Path, known: set[tuple[str, str]]) -> list[dict[str, 
             item_id = _text(item.get("id")) or _stable_id(
                 day, title, _text(item.get("goal_id"))
             )
+            raw_status = _text(item.get("status"))
             status = (
                 "completed"
-                if item.get("status") in {"done", "completed"}
+                if raw_status in {"done", "completed"}
                 else "partial"
-                if item.get("status") == "doing"
+                if raw_status == "doing"
+                else raw_status
+                if raw_status
+                in {"cancelled", "archived", "deleted", "blocked", "someday"}
                 else "pending"
             )
             main = item_id in main_ids
