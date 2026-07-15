@@ -104,7 +104,7 @@ def test_chat_import_only_file_json_text_and_stdin_create_drafts_and_sessions(tm
     stdin_root = tmp_path / "stdin"
     _init(stdin_root)
     monkeypatch.setattr(cli, "_stdin_is_piped", lambda: True)
-    stdin = runner.invoke(app, ["chat", "--import-only", "--root", str(stdin_root)], input=json.dumps(_payload(), ensure_ascii=False))
+    stdin = runner.invoke(app, ["chat", "--import-only", "--date", "2026-07-14", "--root", str(stdin_root)], input=json.dumps(_payload(), ensure_ascii=False))
     assert stdin.exit_code == 0, stdin.output
     assert (stdin_root / "data" / "drafts" / f"{DAY}.json").is_file()
 

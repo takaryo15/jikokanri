@@ -121,6 +121,19 @@ def build_dynamic_prompt(root: Path, day: str, summary: dict[str, Any], template
     if minimums:
         lines.extend(["", "今週の最低ライン:"])
         lines.extend(f"- {item}" for item in minimums)
+    try:
+        from .planning import load_daily_plan
+        daily_goal_plan = load_daily_plan(root, day)
+    except (OSError, ValueError):
+        daily_goal_plan = None
+    if daily_goal_plan and daily_goal_plan.get("status") == "approved":
+        lines.extend(["", "今日の計画:"])
+        for index, item in enumerate(daily_goal_plan.get("main_candidates") or [], start=1):
+            lines.append(f"{index}. {item['title']}")
+        plan_minimums = [item.get("minimum") for item in daily_goal_plan.get("main_candidates") or [] if item.get("minimum")]
+        if plan_minimums:
+            lines.append("最低ライン:")
+            lines.extend(f"- {item}" for item in plan_minimums)
     lines.extend([
         "",
         "以下に、今日の出来事・進捗・崩れた原因・明日の予定を自由に書いてください。",

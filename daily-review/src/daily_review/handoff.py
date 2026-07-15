@@ -20,6 +20,15 @@ class HandoffError(ValueError):
     pass
 
 
+def local_now() -> datetime:
+    """Return the current application time.
+
+    Keeping the clock behind one small function makes expiry behavior
+    deterministic in boundary tests without changing the stored format.
+    """
+    return datetime.now(ZoneInfo("Asia/Tokyo"))
+
+
 def expires_at(day: str) -> str:
     from .date_utils import parse_date
 
@@ -113,7 +122,7 @@ def is_expired(item: dict[str, Any], *, now: datetime | None = None) -> bool:
     if not isinstance(value, str):
         raise HandoffError("handoffのexpires_atがありません")
     try:
-        current = now or datetime.now(ZoneInfo("Asia/Tokyo"))
+        current = now or local_now()
         return current >= datetime.fromisoformat(value)
     except ValueError as exc:
         raise HandoffError("handoffのexpires_atが不正です") from exc

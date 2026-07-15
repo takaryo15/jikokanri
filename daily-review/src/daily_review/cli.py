@@ -61,8 +61,27 @@ from .goals import (
     milestones_of, new_goal, new_milestone, new_step, next_goal_action, parse_metric, reorder_milestone, reorder_step,
     save_goal, set_goal_status, step_warnings, update_milestone, update_step, validate_goal,
 )
+from .planning import (
+    MAX_MAIN_CANDIDATES, PlanningError, apply_step_updates, approve_plan as approve_goal_plan,
+    daily_plan_path, generate_daily_plan, generate_weekly_plan, load_daily_plan, load_weekly_plan,
+    save_daily_plan, save_weekly_plan, update_daily_plan, update_weekly_plan, weekly_plan_path,
+)
+from .evaluation import (
+    EvaluationError, approve_evaluation, generate_monthly_evaluation, generate_weekly_evaluation,
+    load_monthly_evaluation, load_weekly_evaluation, save_evaluation,
+)
+from .replan import (
+    ReplanError, apply_replan, cancel_replan, edit_replan, generate_replan, list_replans,
+    load_replan, save_replan,
+)
+from .goal_coach import GoalCoachError, build_coach_prompt, receive_coach_payload
+from .goal_design import (
+    GoalDesignError, apply_design, create_design, load_design, receive_proposal,
+    render_prompt as render_goal_design_prompt, save_answer,
+)
 from .session import prompt_hash, save_session
 from .v11_check import collect_v11_checks, repository_root
+from .v12_check import collect_v12_checks
 
 
 app = typer.Typer(
@@ -73,9 +92,17 @@ app = typer.Typer(
 goal_app = typer.Typer(help="定性・定量指標を持つ目標を安全に管理します。")
 milestone_app = typer.Typer(help="目標を期限付きマイルストーンへ分解します。")
 step_app = typer.Typer(help="マイルストーンの具体的な実行ステップを管理します。")
+plan_app = typer.Typer(help="目標由来の週次・日次計画を確認して承認します。")
+evaluate_app = typer.Typer(help="目標を週次・月次で評価します。")
+replan_app = typer.Typer(help="評価に基づく計画修正案を確認して適用します。", invoke_without_command=True)
+design_app = typer.Typer(help="ChatGPTと往復する目標設計セッションを管理します。", invoke_without_command=True)
 app.add_typer(goal_app, name="goal")
+app.add_typer(plan_app, name="plan")
 goal_app.add_typer(milestone_app, name="milestone")
 milestone_app.add_typer(step_app, name="step")
+goal_app.add_typer(evaluate_app, name="evaluate")
+goal_app.add_typer(replan_app, name="replan")
+goal_app.add_typer(design_app, name="design")
 
 
 @app.callback()
@@ -703,7 +730,35 @@ def v11_check(
             typer.echo("daily-review v11-check: ERROR")
         else:
             typer.echo("daily-review v11-check: OK")
-            typer.echo("v1.1.0 is ready")
+            typer.echo("v1.1 workflow is compatible")
+    if report["errors"]:
+        raise typer.Exit(code=5)
+
+
+@app.command("v12-check")
+def v12_check(
+    root: Path | None = RootOption,
+    verbose: bool = typer.Option(False, "--verbose", help="doctorの警告も表示します。"),
+    json_output: bool = typer.Option(False, "--json", help="JSON以外を出力しません。"),
+) -> None:
+    """v1.2のデータ安全性と運用準備を読み取り専用で確認します。"""
+    report = collect_v12_checks(_root(root))
+    if json_output:
+        typer.echo(json.dumps(report, ensure_ascii=False, indent=2))
+    else:
+        typer.echo(f"保存先ルート: {report['root']}")
+        for item in report["checks"]:
+            if item["level"] == "OK" or verbose:
+                detail = "" if item["level"] == "OK" else f": {item['message']}"
+                typer.echo(f"{item['level']:<5}{item['name']}{detail}")
+        if verbose:
+            for warning in report["doctor_warnings"]:
+                typer.echo(f"WARN {warning['message']}")
+        if report["errors"]:
+            typer.echo("daily-review v12-check: ERROR")
+        else:
+            typer.echo("daily-review v12-check: OK")
+            typer.echo(f"v{report['version']} is ready" if report["version"] == "1.2.0" else "v1.2.0rc1 is ready for final operational testing")
     if report["errors"]:
         raise typer.Exit(code=5)
 
@@ -762,6 +817,113 @@ def _print_goal(goal: dict[str, Any], goals: list[dict[str, Any]]) -> None:
             typer.echo(f"- {child['title']}")
     else:
         typer.echo("なし")
+
+
+@design_app.callback()
+def goal_design(
+    ctx: typer.Context,
+    text: str | None = typer.Option(None, "--text", help="曖昧な目標の原文"),
+    root: Path | None = RootOption,
+) -> None:
+    """目標設計セッションを開始し、ChatGPT用プロンプトを表示します。"""
+    if ctx.invoked_subcommand is not None:
+        return
+    if text is None:
+        typer.echo(ctx.get_help())
+        return
+    try:
+        value = create_design(_root(root), text)
+    except (GoalDesignError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo(render_goal_design_prompt(value))
+    typer.echo(f"\n保存先: data/goal-designs/{value['id']}.json")
+
+
+@design_app.command("answer")
+def goal_design_answer(
+    design_id: str = typer.Argument(...),
+    answer: str = typer.Option(..., "--answer"),
+    root: Path | None = RootOption,
+) -> None:
+    """確認質問への回答を原文のまま追記します。"""
+    try:
+        value = save_answer(_root(root), design_id, answer)
+    except (GoalDesignError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("回答を保存しました")
+    typer.echo(f"回答数: {len(value['answers'])}件")
+    typer.echo("次の操作: daily-review goal design prompt " + design_id)
+
+
+@design_app.command("prompt")
+def goal_design_prompt(design_id: str = typer.Argument(...), root: Path | None = RootOption) -> None:
+    """回答を含むChatGPT用プロンプトを再表示します。"""
+    try:
+        typer.echo(render_goal_design_prompt(load_design(_root(root), design_id)))
+    except (GoalDesignError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+
+
+@design_app.command("receive")
+def goal_design_receive(
+    design_id: str = typer.Argument(...),
+    json_text: str | None = typer.Option(None, "--json-text"),
+    file: Path | None = typer.Option(None, "--file"),
+    root: Path | None = RootOption,
+) -> None:
+    """ChatGPTが作成した目標候補JSONを未適用で保存します。"""
+    if (json_text is None) == (file is None):
+        _goal_error("--json-text または --file のどちらか1つを指定してください")
+    try:
+        raw = json_text if json_text is not None else file.read_text(encoding="utf-8")
+        payload = json.loads(raw)
+        receive_proposal(_root(root), design_id, payload)
+    except json.JSONDecodeError as exc:
+        _goal_error(f"JSONが不正です: {exc}", code=3)
+    except (GoalDesignError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("目標設計proposalを保存しました（未適用）")
+    typer.echo("次の操作: daily-review goal design review " + design_id)
+
+
+@design_app.command("review")
+def goal_design_review(
+    design_id: str = typer.Argument(...),
+    json_output: bool = typer.Option(False, "--json"),
+    root: Path | None = RootOption,
+) -> None:
+    """適用前の目標設計候補を確認します。"""
+    try:
+        value = load_design(_root(root), design_id)
+    except (GoalDesignError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    if json_output:
+        typer.echo(json.dumps(value, ensure_ascii=False, indent=2))
+        return
+    typer.echo(f"目標設計｜{design_id}")
+    typer.echo(f"状態: {value['status']}")
+    typer.echo(f"原文: {value['raw_goal']}")
+    proposal = value.get("proposal") or {}
+    typer.echo(f"目標候補: {(proposal.get('goal') or {}).get('title', '未受信')}")
+    typer.echo(f"マイルストーン: {len(proposal.get('milestones') or [])}件")
+
+
+@design_app.command("apply")
+def goal_design_apply(
+    design_id: str = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes"),
+    root: Path | None = RootOption,
+) -> None:
+    """確認済みの候補をgoalとroadmapへ1回だけ適用します。"""
+    if not yes:
+        _goal_error("適用には --yes が必要です")
+    try:
+        goal, _ = apply_design(_root(root), design_id)
+    except (GoalDesignError, GoalError, OSError, ValueError) as exc:
+        _goal_error(str(exc), code=3)
+    typer.echo("目標設計を適用しました")
+    typer.echo(f"目標ID: {goal['id']}")
+    typer.echo(f"次の操作: daily-review goal roadmap {goal['id']}")
 
 
 @goal_app.command("add")
@@ -1274,6 +1436,459 @@ def goal_next(goal_id: str = typer.Argument(...), date: str | None = DateOption,
         typer.echo(f"最低ライン: {step.get('minimum') or '未設定'}")
     else:
         typer.echo("実行ステップ: 未分解")
+
+
+def _planning_error(message: str, *, code: int = 3) -> None:
+    typer.echo(f"ERROR: {message}", err=True)
+    raise typer.Exit(code=code)
+
+
+def _print_week_plan(plan: dict[str, Any], *, saved: bool) -> None:
+    typer.echo(f"週次計画候補｜{plan['week_start']}〜{plan['week_end']}")
+    typer.echo("重点候補:")
+    for index, item in enumerate(plan.get("focus_items") or [], start=1):
+        typer.echo(f"{index}. {item['category']}｜{item['title']}")
+        typer.echo(f"   期限: {item.get('due_date') or '未設定'}")
+        typer.echo(f"   理由: {item.get('reason') or '目標の次アクション'}")
+    if not plan.get("focus_items"):
+        typer.echo("なし")
+    if plan.get("carryovers"):
+        typer.echo("前週からの繰越:")
+        for item in plan["carryovers"]: typer.echo(f"- {item.get('title', item)}")
+    typer.echo(f"保存状態: {'承認済み' if plan.get('status') == 'approved' else '保存済み' if saved else '未保存'}")
+    if not saved:
+        typer.echo(f"次の操作: daily-review plan week --date {plan['week_start']} --save")
+
+
+def _print_daily_plan(plan: dict[str, Any], *, saved: bool) -> None:
+    typer.echo(f"今日の計画候補｜{plan['date']}")
+    typer.echo("Main候補:")
+    for index, item in enumerate(plan.get("main_candidates") or [], start=1):
+        typer.echo(f"{index}. {item['category']}｜{item['title']}")
+        if item.get("minimum"): typer.echo(f"   最低ライン: {item['minimum']}")
+        typer.echo(f"   理由: {item.get('reason') or '目標の次アクション'}")
+    if not plan.get("main_candidates"):
+        typer.echo("なし")
+    if plan.get("other_tasks"):
+        typer.echo("その他候補:")
+        for item in plan["other_tasks"]: typer.echo(f"- {item['title']}")
+    if len(plan.get("main_candidates") or []) >= MAX_MAIN_CANDIDATES and plan.get("other_tasks"):
+        typer.echo("WARNING: 今日の候補が多すぎます。Mainは最大3件に絞ってください", err=True)
+    if not saved:
+        typer.echo(f"次の操作: daily-review plan today --date {plan['date']} --save")
+
+
+@plan_app.command("week")
+def plan_week(
+    date: str | None = DateOption, dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"), save: bool = typer.Option(False, "--save"), root: Path | None = RootOption,
+) -> None:
+    """進行中の目標から、火曜始まりの週次重点候補を作ります。"""
+    if save and dry_run: _planning_error("--save と --dry-run は同時に指定できません", code=2)
+    day, base = _day(date), _root(root)
+    try:
+        plan = generate_weekly_plan(base, day, load_priorities(base))
+        if save and not dry_run: save_weekly_plan(base, plan)
+    except (PlanningError, GoalError, OSError, ValueError) as exc:
+        _planning_error(str(exc))
+    if json_output:
+        typer.echo(json.dumps(plan, ensure_ascii=False, indent=2)); return
+    _print_week_plan(plan, saved=save and not dry_run)
+    if dry_run: typer.echo("dry-run: 保存は行いませんでした")
+
+
+@plan_app.command("today")
+def plan_today(
+    date: str | None = DateOption, dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"), save: bool = typer.Option(False, "--save"), root: Path | None = RootOption,
+) -> None:
+    """承認済み週次重点と目標から、今日のMain候補を最大3件作ります。"""
+    if save and dry_run: _planning_error("--save と --dry-run は同時に指定できません", code=2)
+    day, base = _day(date), _root(root)
+    try:
+        plan = generate_daily_plan(base, day, load_priorities(base))
+        if save and not dry_run: save_daily_plan(base, plan)
+    except (PlanningError, GoalError, OSError, ValueError) as exc:
+        _planning_error(str(exc))
+    if json_output:
+        typer.echo(json.dumps(plan, ensure_ascii=False, indent=2)); return
+    _print_daily_plan(plan, saved=save and not dry_run)
+    if dry_run: typer.echo("dry-run: 保存は行いませんでした")
+
+
+@plan_app.command("review")
+def plan_review(
+    week: str | None = typer.Option(None, "--week"), date: str | None = DateOption,
+    json_output: bool = typer.Option(False, "--json"), remove: str | None = typer.Option(None, "--remove"),
+    add_step: tuple[str, str, str] | None = typer.Option(None, "--add-step"), move: str | None = typer.Option(None, "--move"),
+    position: int | None = typer.Option(None, "--position"), set_minimum: str | None = typer.Option(None, "--set-minimum"), root: Path | None = RootOption,
+) -> None:
+    """保存済み週次または日次計画を表示・編集します。"""
+    if (week is None) == (date is None): _planning_error("--week または --date のどちらか一方を指定してください", code=2)
+    base = _root(root)
+    try:
+        if week:
+            plan = load_weekly_plan(base, week)
+            if not plan: raise PlanningError("週次計画が見つかりません")
+            items = plan["focus_items"]
+            changed = False
+            if remove:
+                filtered = [item for item in items if item["id"] != remove]
+                if len(filtered) == len(items): raise PlanningError("削除対象の重点が見つかりません")
+                plan["focus_items"] = filtered; items = filtered; changed = True
+            if add_step:
+                goal_id, milestone_id, step_id = add_step
+                goal = load_goal(base, goal_id); milestone, step = find_step(goal, milestone_id, step_id)
+                if len(items) >= 5: raise PlanningError("週次重点は最大5件です")
+                from .planning import _candidate
+                items.append(_candidate(goal, milestone, step, reason="手動追加")); changed = True
+            if move:
+                if position is None: raise PlanningError("--moveには--positionが必要です")
+                item = next((value for value in items if value["id"] == move), None)
+                if not item or not 1 <= position <= len(items): raise PlanningError("並べ替え対象またはpositionが不正です")
+                items.remove(item); items.insert(position - 1, item); changed = True
+            if changed: update_weekly_plan(base, plan)
+            if json_output: typer.echo(json.dumps(plan, ensure_ascii=False, indent=2)); return
+            _print_week_plan(plan, saved=True)
+        else:
+            day = _day(date); plan = load_daily_plan(base, day)
+            if not plan: raise PlanningError("日次計画が見つかりません")
+            changed = False
+            if set_minimum:
+                if "=" not in set_minimum: raise PlanningError("--set-minimumはdaily-plan-xxxxxxxx=最低ライン形式にしてください")
+                item_id, minimum = set_minimum.split("=", 1)
+                item = next((value for value in plan["main_candidates"] if value["id"] == item_id), None)
+                if not item or not minimum.strip(): raise PlanningError("最低ラインの対象または内容が不正です")
+                item["minimum"] = minimum; plan["minimum_candidates"] = [value["minimum"] for value in plan["main_candidates"] if value.get("minimum")]; changed = True
+            if changed: update_daily_plan(base, plan)
+            if json_output: typer.echo(json.dumps(plan, ensure_ascii=False, indent=2)); return
+            _print_daily_plan(plan, saved=True)
+    except (PlanningError, GoalError, OSError, ValueError) as exc:
+        _planning_error(str(exc))
+
+
+@plan_app.command("apply")
+def plan_apply(
+    week: str | None = typer.Option(None, "--week"), date: str | None = DateOption,
+    yes: bool = typer.Option(False, "--yes"), root: Path | None = RootOption,
+) -> None:
+    """週次または日次のドラフト計画を明示承認します。"""
+    if (week is None) == (date is None): _planning_error("--week または --date のどちらか一方を指定してください", code=2)
+    if not yes and not typer.confirm("この計画を承認しますか？", default=False): _planning_error("承認を中止しました", code=2)
+    try:
+        plan = approve_goal_plan(_root(root), week=week, day=_day(date) if date else None)
+    except (PlanningError, OSError, ValueError) as exc:
+        _planning_error(str(exc))
+    typer.echo("計画を承認しました")
+    typer.echo(f"状態: {plan['status']}")
+
+
+@goal_app.command("link")
+def goal_link(
+    date: str | None = DateOption, week: str | None = typer.Option(None, "--week"), main_index: int | None = typer.Option(None, "--main-index"),
+    task_index: int | None = typer.Option(None, "--task-index"), focus_index: int | None = typer.Option(None, "--focus-index"),
+    goal: str | None = typer.Option(None, "--goal"), milestone: str | None = typer.Option(None, "--milestone"), step: str | None = typer.Option(None, "--step"), root: Path | None = RootOption,
+) -> None:
+    """計画項目を目標・マイルストーン・ステップへ手動リンクします。"""
+    if (week is None) == (date is None) or sum(value is not None for value in (main_index, task_index, focus_index)) != 1:
+        _planning_error("日付/週とリンク対象を1つずつ指定してください", code=2)
+    base = _root(root)
+    try:
+        if week:
+            plan = load_weekly_plan(base, week)
+            if not plan or focus_index is None or not 1 <= focus_index <= len(plan["focus_items"]): raise PlanningError("週次重点が見つかりません")
+            item = plan["focus_items"][focus_index - 1]
+            if goal: item["goal_id"] = goal
+            if milestone: item["milestone_id"] = milestone
+            if step: item["step_id"] = step
+            from .planning import _validate_ref
+            _validate_ref(base, item); update_weekly_plan(base, plan)
+        else:
+            day = _day(date); plan = load_daily_plan(base, day)
+            if not plan: raise PlanningError("日次計画が見つかりません")
+            record_type, record_index = ("main", main_index) if main_index is not None else ("task", task_index)
+            source_items = plan["main_candidates"] if record_type == "main" else plan.get("other_tasks") or []
+            if record_index is None or not 1 <= record_index <= len(source_items): raise PlanningError("日次計画項目が見つかりません")
+            item = source_items[record_index - 1]
+            if goal: item["goal_id"] = goal
+            if milestone: item["milestone_id"] = milestone
+            if step: item["step_id"] = step
+            from .planning import _validate_ref
+            _validate_ref(base, item)
+            plan["goal_links"] = [link for link in plan.get("goal_links") or [] if (link.get("record_type"), link.get("record_index")) != (record_type, record_index)]
+            plan["goal_links"].append({"record_type": record_type, "record_index": record_index, "goal_id": item["goal_id"], "milestone_id": item.get("milestone_id"), "step_id": item.get("step_id"), "linked_at": now_iso()})
+            update_daily_plan(base, plan)
+    except (PlanningError, GoalError, OSError, ValueError) as exc:
+        _planning_error(str(exc))
+    typer.echo("目標リンクを保存しました")
+
+
+@goal_app.command("unlink")
+def goal_unlink(date: str | None = DateOption, main_index: int = typer.Option(..., "--main-index"), root: Path | None = RootOption) -> None:
+    """日次Mainからリンクだけを外します。文章や計画項目は削除しません。"""
+    try:
+        plan = load_daily_plan(_root(root), _day(date))
+        if not plan: raise PlanningError("日次計画が見つかりません")
+        old = len(plan.get("goal_links") or []); plan["goal_links"] = [link for link in plan.get("goal_links") or [] if link.get("record_index") != main_index]
+        if old == len(plan["goal_links"]): raise PlanningError("解除対象のリンクが見つかりません")
+        update_daily_plan(_root(root), plan)
+    except (PlanningError, OSError, ValueError) as exc:
+        _planning_error(str(exc))
+    typer.echo("目標リンクを解除しました")
+
+
+@goal_app.command("progress")
+def goal_progress_command(date: str | None = DateOption, apply: bool = typer.Option(False, "--apply"), yes: bool = typer.Option(False, "--yes"), root: Path | None = RootOption) -> None:
+    """日次のリンク済み項目について、ステップ状態の更新候補を表示します。"""
+    day, base = _day(date), _root(root)
+    try:
+        plan = load_daily_plan(base, day)
+        if not plan: raise PlanningError("日次計画が見つかりません")
+        entry = load_daily(base, day) or {}
+        status_by_area = {item.get("area"): item.get("status") for item in ((entry.get("structured_review") or {}).get("today_main") or []) if isinstance(item, dict)}
+        candidates: list[tuple[dict[str, Any], str]] = []
+        for link in plan.get("goal_links") or []:
+            if link.get("record_type") != "main":
+                continue
+            item = plan["main_candidates"][link["record_index"] - 1]
+            review_status = status_by_area.get(item.get("category"))
+            proposed = {"完了": "done", "一部進んだ": "doing", "中止": "cancelled"}.get(review_status)
+            if proposed and link.get("step_id"):
+                candidates.append((link, proposed))
+    except (PlanningError, OSError, ValueError, IndexError) as exc:
+        _planning_error(str(exc))
+    typer.echo(f"目標進捗候補｜{day}")
+    if not candidates: typer.echo("反映候補はありません")
+    for index, (link, status) in enumerate(candidates, start=1):
+        item = plan["main_candidates"][link["record_index"] - 1]
+        typer.echo(f"{index}. {item['title']} → step status: {status}")
+    if apply:
+        if not yes and not typer.confirm("表示した進捗候補を反映しますか？", default=False): _planning_error("進捗反映を中止しました", code=2)
+        try:
+            apply_step_updates(base, [(link["goal_id"], link["milestone_id"], link["step_id"], status) for link, status in candidates])
+        except (PlanningError, GoalError, OSError, ValueError) as exc:
+            _planning_error(str(exc))
+        plan.setdefault("progress_applications", []).append({
+            "applied_at": now_iso(),
+            "updates": [
+                {"goal_id": link["goal_id"], "milestone_id": link["milestone_id"], "step_id": link["step_id"], "status": status}
+                for link, status in candidates
+            ],
+        })
+        try:
+            update_daily_plan(base, plan)
+        except (PlanningError, OSError, ValueError) as exc:
+            _planning_error(str(exc))
+        typer.echo("目標進捗を反映しました")
+
+
+def _evaluation_error(message: str, *, code: int = 3) -> None:
+    typer.echo(f"ERROR: {message}", err=True)
+    raise typer.Exit(code=code)
+
+
+def _print_evaluation(value: dict[str, Any], *, period_type: str) -> None:
+    if period_type == "week":
+        typer.echo(f"週次目標評価｜{value['week_start']}〜{value['week_end']}")
+        period_days = 7
+    else:
+        typer.echo(f"月次目標評価｜{value['month']}")
+        period_days = month_range_for(f"{value['month']}-01")
+        period_days = (parse_date(period_days[1]) - parse_date(period_days[0])).days + 1
+    summary = value.get("summary") or {}
+    planned, completed = summary.get("planned_main_count", 0), summary.get("completed_main_count", 0)
+    completion = round(100 * completed / planned) if planned else 0
+    typer.echo("全体:")
+    typer.echo(f"記録日数: {summary.get('recorded_days', 0)} / {period_days}日")
+    typer.echo(f"Main完了率: {completion}%")
+    typer.echo(f"最低ライン達成: {summary.get('minimum_achieved_days', 0)}日")
+    typer.echo(f"予定過多: {summary.get('overloaded_days', 0)}日")
+    typer.echo("目標別:")
+    labels = {"ahead": "前倒し", "on_track": "順調", "slightly_delayed": "やや遅れ", "delayed": "遅れ", "blocked": "停止", "inactive": "活動なし", "completed": "完了"}
+    for index, item in enumerate(value.get("goal_evaluations") or [], start=1):
+        typer.echo(f"{index}. {item.get('category') or '未設定'}｜{item['title']}")
+        typer.echo(f"   判定: {labels.get(item['status'], item['status'])}")
+        typer.echo(f"   進捗: {item.get('start_progress', 0):g}% → {item.get('end_progress', 0):g}%")
+        typer.echo(f"   完了step: {item.get('completed_steps', 0)}件 / overdue: {item.get('overdue_steps', 0)}件")
+    if not value.get("goal_evaluations"): typer.echo("なし")
+    typer.echo("診断:")
+    for item in value.get("diagnostics") or []: typer.echo(f"- {item['message']}")
+    if not value.get("diagnostics"): typer.echo("なし")
+    typer.echo(f"保存状態: {'承認済み' if value.get('status') == 'approved' else 'ドラフト'}")
+
+
+@evaluate_app.command("week")
+def goal_evaluate_week(
+    date: str | None = DateOption, save: bool = typer.Option(False, "--save"), dry_run: bool = typer.Option(False, "--dry-run"),
+    json_output: bool = typer.Option(False, "--json"), root: Path | None = RootOption,
+) -> None:
+    """火曜始まり・月曜終わりで目標と計画精度を評価します。"""
+    if save and dry_run: _evaluation_error("--save と --dry-run は同時に指定できません", code=2)
+    try:
+        value = generate_weekly_evaluation(_root(root), _day(date))
+        if save and not dry_run: save_evaluation(_root(root), value, period_type="week")
+    except (EvaluationError, PlanningError, GoalError, OSError, ValueError) as exc:
+        _evaluation_error(str(exc))
+    if json_output: typer.echo(json.dumps(value, ensure_ascii=False, indent=2)); return
+    _print_evaluation(value, period_type="week")
+    if dry_run: typer.echo("dry-run: 保存は行いませんでした")
+
+
+@evaluate_app.command("month")
+def goal_evaluate_month(
+    month: str | None = typer.Option(None, "--month"), date: str | None = DateOption,
+    save: bool = typer.Option(False, "--save"), dry_run: bool = typer.Option(False, "--dry-run"), json_output: bool = typer.Option(False, "--json"), root: Path | None = RootOption,
+) -> None:
+    """暦月単位で目標の進捗傾向を評価します。"""
+    if month and date: _evaluation_error("--month と --date は同時に指定できません", code=2)
+    if save and dry_run: _evaluation_error("--save と --dry-run は同時に指定できません", code=2)
+    target = month or _day(date)[:7]
+    try:
+        value = generate_monthly_evaluation(_root(root), target)
+        if save and not dry_run: save_evaluation(_root(root), value, period_type="month")
+    except (EvaluationError, PlanningError, GoalError, OSError, ValueError) as exc:
+        _evaluation_error(str(exc))
+    if json_output: typer.echo(json.dumps(value, ensure_ascii=False, indent=2)); return
+    _print_evaluation(value, period_type="month")
+    if dry_run: typer.echo("dry-run: 保存は行いませんでした")
+
+
+@evaluate_app.command("review")
+def goal_evaluate_review(
+    week: str | None = typer.Option(None, "--week"), month: str | None = typer.Option(None, "--month"),
+    json_output: bool = typer.Option(False, "--json"), root: Path | None = RootOption,
+) -> None:
+    """保存済みの週次または月次評価を確認します。"""
+    if (week is None) == (month is None): _evaluation_error("--week または --month のどちらか一方を指定してください", code=2)
+    try:
+        value = load_weekly_evaluation(_root(root), week or "") if week else load_monthly_evaluation(_root(root), month or "")
+        if not value: raise EvaluationError("評価が見つかりません")
+    except (EvaluationError, OSError, ValueError) as exc: _evaluation_error(str(exc))
+    if json_output: typer.echo(json.dumps(value, ensure_ascii=False, indent=2)); return
+    _print_evaluation(value, period_type="week" if week else "month")
+
+
+@evaluate_app.command("apply")
+def goal_evaluate_apply(
+    week: str | None = typer.Option(None, "--week"), month: str | None = typer.Option(None, "--month"),
+    yes: bool = typer.Option(False, "--yes"), root: Path | None = RootOption,
+) -> None:
+    """評価だけを承認し、目標や計画は変更しません。"""
+    if (week is None) == (month is None): _evaluation_error("--week または --month のどちらか一方を指定してください", code=2)
+    if not yes and not typer.confirm("評価を承認しますか？目標や計画は変更されません。", default=False): _evaluation_error("評価承認を中止しました", code=2)
+    try: value = approve_evaluation(_root(root), week=week, month=month)
+    except (EvaluationError, OSError, ValueError) as exc: _evaluation_error(str(exc))
+    typer.echo("評価を承認しました")
+    typer.echo(f"状態: {value['status']}")
+
+
+def _print_replan(value: dict[str, Any]) -> None:
+    typer.echo(f"計画修正案｜{value['id']}")
+    typer.echo(f"状態: {value['status']}")
+    labels = {"reduce_daily_load": "日次負荷削減", "extend_deadline": "期限変更", "pause_goal": "目標一時停止", "remove_blocker": "blocker除去", "review_goal_definition": "目標定義見直し", "change_minimum": "最低ライン変更", "reduce_scope": "スコープ縮小"}
+    for index, item in enumerate(value.get("proposals") or [], start=1):
+        approved = " [承認対象]" if item["id"] in value.get("approved_proposal_ids", []) else ""
+        typer.echo(f"{index}. {item['title']}{approved}")
+        typer.echo(f"   ID: {item['id']}")
+        typer.echo(f"   種類: {labels.get(item['type'], item['type'])}")
+        typer.echo(f"   理由: {item['reason']}")
+        typer.echo(f"   リスク: {item.get('risk') or '未設定'}")
+        typer.echo(f"   信頼度: {item.get('confidence')}")
+
+
+@replan_app.callback()
+def goal_replan(
+    ctx: typer.Context, week: str | None = typer.Option(None, "--week"), month: str | None = typer.Option(None, "--month"),
+    goal_id: str | None = typer.Option(None, "--goal"), save: bool = typer.Option(False, "--save"), json_output: bool = typer.Option(False, "--json"), root: Path | None = RootOption,
+) -> None:
+    """評価または特定目標から、安全な修正案ドラフトを作ります。"""
+    if ctx.invoked_subcommand is not None: return
+    try:
+        value = generate_replan(_root(root), week=week, month=month, goal_id=goal_id)
+        if save: save_replan(_root(root), value)
+    except (ReplanError, EvaluationError, GoalError, OSError, ValueError) as exc: _evaluation_error(str(exc))
+    if json_output: typer.echo(json.dumps(value, ensure_ascii=False, indent=2)); return
+    _print_replan(value)
+    if not save: typer.echo("保存状態: 未保存")
+
+
+@replan_app.command("review")
+def goal_replan_review(replan_id: str = typer.Argument(...), json_output: bool = typer.Option(False, "--json"), root: Path | None = RootOption) -> None:
+    """保存済みreplanの提案と承認対象を表示します。"""
+    try: value = load_replan(_root(root), replan_id)
+    except (ReplanError, OSError, ValueError) as exc: _evaluation_error(str(exc))
+    if json_output: typer.echo(json.dumps(value, ensure_ascii=False, indent=2)); return
+    _print_replan(value)
+
+
+@replan_app.command("edit")
+def goal_replan_edit(
+    replan_id: str = typer.Argument(...), remove: str | None = typer.Option(None, "--remove"), approve: str | None = typer.Option(None, "--approve"),
+    setting: str | None = typer.Option(None, "--set"), root: Path | None = RootOption,
+) -> None:
+    """proposalの削除・承認対象追加・安全なafter値の編集を行います。"""
+    try: value = edit_replan(_root(root), replan_id, remove=remove, approve=approve, setting=setting)
+    except (ReplanError, OSError, ValueError) as exc: _evaluation_error(str(exc))
+    typer.echo("replanを更新しました")
+    typer.echo(f"revision: {value['revision']}")
+
+
+@replan_app.command("apply")
+def goal_replan_apply(replan_id: str = typer.Argument(...), yes: bool = typer.Option(False, "--yes"), root: Path | None = RootOption) -> None:
+    """承認対象に選んだproposalだけをバックアップ後に適用します。"""
+    if not yes and not typer.confirm("承認対象proposalを適用しますか？", default=False): _evaluation_error("replan適用を中止しました", code=2)
+    try: value = apply_replan(_root(root), replan_id)
+    except (ReplanError, GoalError, OSError, ValueError) as exc: _evaluation_error(str(exc))
+    typer.echo("replanを適用しました")
+    typer.echo(f"状態: {value['status']}")
+
+
+@replan_app.command("list")
+def goal_replan_list(json_output: bool = typer.Option(False, "--json"), root: Path | None = RootOption) -> None:
+    """保存済みreplanを一覧表示します。"""
+    try: values = list_replans(_root(root))
+    except (ReplanError, OSError, ValueError) as exc: _evaluation_error(str(exc))
+    if json_output: typer.echo(json.dumps({"replans": values}, ensure_ascii=False, indent=2)); return
+    if not values: typer.echo("replanはありません")
+    for value in values: typer.echo(f"[{value['status']}] {value['id']}｜{value['source_type']}:{value.get('source_id')}")
+
+
+@replan_app.command("cancel")
+def goal_replan_cancel(replan_id: str = typer.Argument(...), yes: bool = typer.Option(False, "--yes"), root: Path | None = RootOption) -> None:
+    """未適用replanを取消します。"""
+    if not yes and not typer.confirm("replanを取り消しますか？", default=False): _evaluation_error("取消を中止しました", code=2)
+    try: value = cancel_replan(_root(root), replan_id)
+    except (ReplanError, OSError, ValueError) as exc: _evaluation_error(str(exc))
+    typer.echo(f"replanを取消しました: {value['id']}")
+
+
+@goal_app.command("coach")
+def goal_coach(
+    week: str | None = typer.Option(None, "--week"), month: str | None = typer.Option(None, "--month"),
+    copy_prompt: bool = typer.Option(False, "--copy"), root: Path | None = RootOption,
+) -> None:
+    """保存済み評価をChatGPTへ渡すプロンプトを生成します。外部APIは使いません。"""
+    try: prompt = build_coach_prompt(_root(root), week=week, month=month)
+    except (GoalCoachError, EvaluationError, OSError, ValueError) as exc: _evaluation_error(str(exc))
+    typer.echo(prompt)
+    if copy_prompt:
+        if not _copy_chat_prompt(prompt): _evaluation_error("クリップボードへコピーできません", code=4)
+        typer.echo("ChatGPT用プロンプトをクリップボードへコピーしました", err=True)
+
+
+@goal_app.command("coach-receive")
+def goal_coach_receive(
+    week: str | None = typer.Option(None, "--week"), month: str | None = typer.Option(None, "--month"),
+    clipboard: bool = typer.Option(False, "--clipboard"), file: Path | None = typer.Option(None, "--file"), json_text: str | None = typer.Option(None, "--json-text"), root: Path | None = RootOption,
+) -> None:
+    """ChatGPT coach回答を評価の補助情報として保存します。自動適用しません。"""
+    try:
+        content, source = _read_chat_import_input(json_text=json_text, file=file, clipboard=clipboard)
+        payload = _parse_json_text(content, source)
+        receive_coach_payload(_root(root), payload, week=week, month=month)
+    except (GoalCoachError, EvaluationError, OSError, ValueError, typer.BadParameter) as exc: _evaluation_error(str(exc), code=2 if isinstance(exc, (GoalCoachError, typer.BadParameter)) else 3)
+    typer.echo("coach分析を保存しました")
+    typer.echo("評価・目標・計画への自動適用は行っていません")
 
 
 @app.command("input")
@@ -3076,6 +3691,17 @@ def summary(
     """指定日の計画・記録・次の操作を短く表示します。"""
     report = build_daily_summary(_root(root), _day(date))
     _print_summary(report, title="日次サマリー")
+    try:
+        plan = load_daily_plan(_root(root), report["date"])
+    except (PlanningError, OSError, ValueError):
+        plan = None
+    if plan:
+        typer.echo(f"目標リンク: {len(plan.get('goal_links') or [])}件")
+        typer.echo(f"目標進捗反映: {'未実行' if plan.get('goal_links') else '対象なし'}")
+    week_start, _ = week_range_for(report["date"])
+    try: weekly_evaluation = load_weekly_evaluation(_root(root), week_start)
+    except (EvaluationError, OSError, ValueError): weekly_evaluation = None
+    typer.echo(f"週次目標評価: {'承認済み' if weekly_evaluation and weekly_evaluation.get('status') == 'approved' else 'ドラフト' if weekly_evaluation else '未作成'}")
     if report["errors"]:
         for error in report["errors"]:
             typer.echo(f"ERROR: {error}", err=True)
@@ -3090,6 +3716,25 @@ def home(
     """毎日最初に見る、計画・未完了・次の操作の統合画面です。"""
     base = _root(root)
     report = build_daily_summary(base, _day(date))
+    resume_next = ""
+    try:
+        designs = []
+        for path in sorted((base / "data" / "goal-designs").glob("design-*.json")) if (base / "data" / "goal-designs").is_dir() else []:
+            value = read_json_file(path)
+            if isinstance(value, dict) and value.get("status") in {"questioning", "proposed"}:
+                designs.append(value)
+        if designs:
+            latest = max(designs, key=lambda item: (item.get("updated_at", ""), item.get("id", "")))
+            action = "review" if latest["status"] == "proposed" else "prompt"
+            resume_next = f"daily-review goal design {action} {latest['id']}"
+        if not resume_next:
+            draft_replans = [item for item in list_replans(base) if item.get("status") == "draft"]
+            if draft_replans:
+                latest_replan = max(draft_replans, key=lambda item: (item.get("updated_at", ""), item.get("id", "")))
+                action = "apply" if latest_replan.get("approved_proposal_ids") else "review"
+                resume_next = f"daily-review goal replan {action} {latest_replan['id']}"
+    except (OSError, ValueError, GoalDesignError, ReplanError):
+        resume_next = ""
     chat_next = chat_home_next_command(base, report)
     handoff_state = "none"
     handoff_eligible = not report.get("draft") and not report.get("entry") and not report.get("inbox_entry_count")
@@ -3104,7 +3749,26 @@ def home(
         handoff_next = f"daily-review receive --date {report['date']} --clipboard"
     else:
         handoff_next = f"daily-review handoff --date {report['date']} --copy" if handoff_state in {"none", "expired"} else ""
-    _print_summary(report, title="daily-review home", next_override=handoff_next if handoff_eligible else chat_next or home_next_command(report))
+    planning_next = ""
+    try:
+        active_goals = [goal for goal in load_goals(base) if goal.get("status") == "active"]
+        week_start, _ = week_range_for(report["date"])
+        weekly_goal_plan = load_weekly_plan(base, week_start)
+        daily_goal_plan = load_daily_plan(base, report["date"])
+        # Do not hide an existing daily review workflow.  Planning is the
+        # first action only for an otherwise empty day with active goals.
+        if active_goals and not report.get("entry") and not report.get("draft") and not report.get("inbox_entry_count"):
+            if report["date"] == week_start and not weekly_goal_plan:
+                planning_next = f"daily-review plan week --date {report['date']}"
+            elif weekly_goal_plan and weekly_goal_plan.get("status") != "approved":
+                planning_next = f"daily-review plan review --week {week_start}"
+            elif not daily_goal_plan:
+                planning_next = f"daily-review plan today --date {report['date']}"
+            elif daily_goal_plan.get("status") != "approved":
+                planning_next = f"daily-review plan review --date {report['date']}"
+    except (PlanningError, GoalError, OSError, ValueError):
+        planning_next = ""
+    _print_summary(report, title="daily-review home", next_override=resume_next or planning_next or (handoff_next if handoff_eligible else chat_next or home_next_command(report)))
     if handoff_state == "issued":
         typer.echo("状態: ChatGPTの回答待ち")
     elif handoff_state == "expired":
@@ -3159,6 +3823,20 @@ def home(
                 for goal, action in next_actions[:2]:
                     item = action["step"] or action["milestone"]
                     typer.echo(f"- {goal.get('category') or goal['title']}｜{item['title']}")
+    week_start, week_end = week_range_for(report["date"])
+    month_start, month_end = month_range_for(report["date"])
+    if report["night_review_exists"] and report["date"] == week_end:
+        try: weekly_evaluation = load_weekly_evaluation(base, week_start)
+        except (EvaluationError, OSError, ValueError): weekly_evaluation = None
+        if not weekly_evaluation:
+            typer.echo(f"目標評価の次操作: daily-review goal evaluate week --date {report['date']} --save")
+        elif weekly_evaluation.get("status") != "approved":
+            typer.echo(f"目標評価の次操作: daily-review goal evaluate review --week {week_start}")
+    if report["night_review_exists"] and report["date"] == month_end:
+        try: monthly_evaluation = load_monthly_evaluation(base, month_start[:7])
+        except (EvaluationError, OSError, ValueError): monthly_evaluation = None
+        if not monthly_evaluation:
+            typer.echo(f"月次評価の次操作: daily-review goal evaluate month --month {month_start[:7]} --save")
     doctor_report = run_doctor(base)
     errors = [item for item in doctor_report["issues"] if item["level"] == "ERROR"]
     if errors:
@@ -3372,13 +4050,13 @@ def doctor(root: Path | None = RootOption) -> None:
 
 @app.command("release-check")
 def release_check(root: Path | None = RootOption) -> None:
-    """v1.1.0 リリースに必要な静的条件を読み取り専用で確認します。"""
+    """v1.2.0 正式リリースに必要な静的条件を読み取り専用で確認します。"""
     del root  # A release check validates the package, not user-owned runtime data.
     source_root = repository_root()
     errors: list[str] = []
     installed_version = _metadata_version()
-    if __version__ != "1.1.0":
-        errors.append(f"アプリのバージョンが1.1.0ではありません: {__version__}")
+    if __version__ != "1.2.0":
+        errors.append(f"アプリのバージョンが1.2.0ではありません: {__version__}")
     if installed_version != __version__:
         errors.append("package metadataのバージョンを取得できないか一致しません")
     command_names = {
@@ -3389,15 +4067,15 @@ def release_check(root: Path | None = RootOption) -> None:
     required_commands = {
         "home", "summary", "start", "next", "doctor", "weekly", "monthly", "backup", "restore",
         "chat", "chat-prompt", "chat-import", "handoff", "receive", "handoff-list", "handoff-cancel",
-        "input", "organize", "review", "edit-draft", "approve", "reflect", "migrate", "v11-check",
-        "goal",
+        "input", "organize", "review", "edit-draft", "approve", "reflect", "migrate", "v11-check", "v12-check",
+        "goal", "plan",
     }
     missing_commands = sorted(required_commands - command_names)
     if missing_commands:
         errors.append("主要コマンドが登録されていません: " + ", ".join(missing_commands))
     from .chat_schema import SCHEMA_VERSION
     from .handoff import HANDOFF_VERSION
-    from .migration import MIGRATION_ID, ROADMAP_MIGRATION_ID
+    from .migration import EVALUATION_MIGRATION_ID, FINAL_MIGRATION_ID, MIGRATION_ID, PLANNING_MIGRATION_ID, ROADMAP_MIGRATION_ID
     from .storage import REQUIRED_TEMPLATE_NAMES
 
     for name in REQUIRED_TEMPLATE_NAMES + (CHAT_IMPORT_PROMPT_NAME,):
@@ -3411,11 +4089,20 @@ def release_check(root: Path | None = RootOption) -> None:
         errors.append("v1.1 migration定義が不正です")
     if ROADMAP_MIGRATION_ID != "v1.2-goal-roadmap":
         errors.append("goal roadmap migration定義が不正です")
+    if PLANNING_MIGRATION_ID != "v1.2-goal-planning":
+        errors.append("goal planning migration定義が不正です")
+    if EVALUATION_MIGRATION_ID != "v1.2-goal-evaluation-rc1":
+        errors.append("goal evaluation migration定義が不正です")
+    if FINAL_MIGRATION_ID != "v1.2-final":
+        errors.append("v1.2 final migration定義が不正です")
+    for name in ("evaluation.py", "replan.py", "goal_coach.py", "goal_design.py", "v12_check.py"):
+        if not (source_root / "src" / "daily_review" / name).is_file():
+            errors.append(f"v1.2 rc1モジュールがありません: {name}")
     if not (source_root / "src" / "daily_review" / "goals.py").is_file():
         errors.append("goal schemaまたはstorageがありません")
     if not (source_root / "config" / "priorities.example.json").is_file():
         errors.append("config/priorities.example.json がありません")
-    for name in ("README.md", "CHANGELOG.md", "RELEASE_CHECKLIST.md", "tests/test_v11_e2e.py"):
+    for name in ("README.md", "CHANGELOG.md", "RELEASE_CHECKLIST.md", "RELEASE_CHECKLIST_V1.2.md", "tests/test_v11_e2e.py"):
         if not (source_root / name).is_file():
             errors.append(f"リリース必須ファイルがありません: {name}")
     try:
@@ -3449,8 +4136,18 @@ def release_check(root: Path | None = RootOption) -> None:
     typer.echo("OK   roadmap command")
     typer.echo("OK   dependency validation")
     typer.echo("OK   next action selection")
+    typer.echo("OK   weekly planning commands")
+    typer.echo("OK   daily planning commands")
+    typer.echo("OK   goal linking commands")
+    typer.echo("OK   progress application workflow")
+    typer.echo("OK   weekly and monthly evaluations")
+    typer.echo("OK   replan review and apply")
+    typer.echo("OK   goal coach workflow")
+    typer.echo("OK   goal design workflow")
+    typer.echo("OK   v12 readiness check")
+    typer.echo("OK   v1.2 final migration")
     typer.echo("OK   runtime data ignored by git")
-    typer.echo("v1.1.0 is ready")
+    typer.echo("v1.2.0 is ready")
 
 
 @app.command()

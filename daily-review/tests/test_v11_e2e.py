@@ -2,16 +2,25 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
+import pytest
 from typer.testing import CliRunner
 
 import daily_review.cli as cli
+import daily_review.handoff as handoff
 from daily_review.cli import app
 
 
 runner = CliRunner()
 DAY = "2026-07-14"
 TEXT = "院試の過去問を解いた。研究は少し進めた。明日は院試を進める。明日は研究を進める。"
+
+
+@pytest.fixture(autouse=True)
+def _fixed_clock(monkeypatch):
+    monkeypatch.setattr(handoff, "local_now", lambda: datetime(2026, 7, 14, 21, 0, tzinfo=ZoneInfo("Asia/Tokyo")))
 
 
 def _init(root):

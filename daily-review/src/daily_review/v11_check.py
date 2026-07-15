@@ -49,7 +49,7 @@ def _priorities_are_valid(path: Path) -> bool:
 def collect_v11_checks(root: Path) -> dict[str, Any]:
     """Collect deterministic v1.1 checks without changing the workspace."""
     checks: list[dict[str, str]] = []
-    checks.append(_check("package version 1.1.0", __version__ == "1.1.0", f"package version: {__version__}"))
+    checks.append(_check("package version v1.1 compatible", __version__ in {"1.1.0", "1.2.0rc1", "1.2.0"}, f"package version: {__version__}"))
     for relative in REQUIRED_DIRECTORIES:
         checks.append(_check(relative, (root / relative).is_dir(), f"必要なディレクトリがありません: {relative}"))
 

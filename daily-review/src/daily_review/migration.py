@@ -18,6 +18,9 @@ from .storage import (
 MIGRATION_ID = "v1.1-base"
 GOALS_MIGRATION_ID = "v1.2-goals-base"
 ROADMAP_MIGRATION_ID = "v1.2-goal-roadmap"
+PLANNING_MIGRATION_ID = "v1.2-goal-planning"
+EVALUATION_MIGRATION_ID = "v1.2-goal-evaluation-rc1"
+FINAL_MIGRATION_ID = "v1.2-final"
 MIGRATION_HISTORY_PATH = Path("data/migrations.json")
 MIGRATION_DIRECTORIES = (
     Path("data/inbox"),
@@ -33,6 +36,14 @@ GOALS_MIGRATION_DIRECTORIES = (
     Path("data/goals"),
     Path("data/goals/items"),
     Path("data/backups/goals"),
+)
+PLANNING_MIGRATION_DIRECTORIES = (
+    Path("data/plans"), Path("data/plans/weekly"), Path("data/plans/daily"), Path("data/backups/plans"),
+)
+EVALUATION_MIGRATION_DIRECTORIES = (
+    Path("data/evaluations"), Path("data/evaluations/weekly"), Path("data/evaluations/monthly"),
+    Path("data/backups/evaluations"), Path("data/replans"), Path("data/backups/replans"), Path("data/tmp"),
+    Path("data/goal-designs"), Path("data/backups/goal-designs"), Path("data/transactions"),
 )
 
 
@@ -52,7 +63,7 @@ def load_migration_history(root: Path) -> dict[str, Any]:
 
 def is_migrated(root: Path) -> bool:
     applied = {item.get("id") for item in load_migration_history(root)["migrations"] if isinstance(item, dict)}
-    return {MIGRATION_ID, GOALS_MIGRATION_ID, ROADMAP_MIGRATION_ID} <= applied
+    return {MIGRATION_ID, GOALS_MIGRATION_ID, ROADMAP_MIGRATION_ID, PLANNING_MIGRATION_ID, EVALUATION_MIGRATION_ID, FINAL_MIGRATION_ID} <= applied
 
 
 def migration_plan(root: Path) -> list[dict[str, str]]:
@@ -61,6 +72,10 @@ def migration_plan(root: Path) -> list[dict[str, str]]:
     for relative in MIGRATION_DIRECTORIES:
         plan.append({"path": str(relative), "action": "existing" if (root / relative).exists() else "create"})
     for relative in GOALS_MIGRATION_DIRECTORIES:
+        plan.append({"path": str(relative), "action": "existing" if (root / relative).exists() else "create"})
+    for relative in PLANNING_MIGRATION_DIRECTORIES:
+        plan.append({"path": str(relative), "action": "existing" if (root / relative).exists() else "create"})
+    for relative in EVALUATION_MIGRATION_DIRECTORIES:
         plan.append({"path": str(relative), "action": "existing" if (root / relative).exists() else "create"})
     priorities = priorities_path(root)
     plan.append({
@@ -106,6 +121,12 @@ def apply_migration(root: Path) -> dict[str, Any]:
     # must never rewrite existing goal JSON just to add an empty list.
     if ROADMAP_MIGRATION_ID not in applied:
         new_records.append({"id": ROADMAP_MIGRATION_ID, "from_version": "1.1.0"})
+    if PLANNING_MIGRATION_ID not in applied:
+        new_records.append({"id": PLANNING_MIGRATION_ID, "from_version": "1.1.0"})
+    if EVALUATION_MIGRATION_ID not in applied:
+        new_records.append({"id": EVALUATION_MIGRATION_ID, "from_version": "1.1.0"})
+    if FINAL_MIGRATION_ID not in applied:
+        new_records.append({"id": FINAL_MIGRATION_ID, "from_version": "1.2.0rc1"})
     for record in new_records:
         history["migrations"].append({
             **record, "applied_at": now_iso(), "to_version": __version__, "changes": list(changes),

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.2.0 - 2026-07-15
+
 ### Added
 
 - vision・long・medium・shortの目標管理と`daily-review goal add/list/show/edit/status/archive`。
@@ -9,6 +11,23 @@
 - `data/goals/items`を正データとする安全な目標保存、doctor検査、migration、homeの目標概要。
 - 目標を期限・依存関係付きのマイルストーンと実行ステップへ分解する`daily-review goal milestone`。
 - ロードマップ表示、次アクション選定、変更前バックアップ、`v1.2-goal-roadmap`移行履歴。
+- 目標由来の週次重点・日次Main候補、明示承認、手動リンク、日次結果に基づく進捗更新候補。
+- 火曜始まりの週次目標評価、暦月の月次評価、診断、根拠付きの修正候補。
+- 選択した提案だけをバックアップ・事前検証・原子的保存で適用するreplanワークフロー。
+- 外部APIを使わない`goal coach` / `goal coach-receive`と、評価への補助分析保存。
+- ChatGPTと往復し、確認後に目標・マイルストーン・ステップを一括作成する`goal design`。
+- `v12-check`、`v1.2-final` migration、doctor、release-check、長期E2E・境界・復旧テスト。
+
+### Fixed
+
+- 日付固定handoffテストを実時間に依存させず、期限境界をclock注入で再現可能にしました。
+- 評価のrecommendation ID・並び順・進捗差分を同じ入力から再現できるようにしました。
+- 月次評価が現在のgoal値から過去進捗を推測せず、保存済み週次評価のスナップショットを使うようにしました。
+
+### Safety
+
+- replanの複数JSON更新にtransaction manifestとrollbackを追加し、部分更新を防止しました。
+- 目標設計proposalは未適用で保存し、`--yes`がない限りgoalを作成しません。
 
 ## 1.1.0 - 2026-07-14
 

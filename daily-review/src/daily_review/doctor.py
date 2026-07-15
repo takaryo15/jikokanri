@@ -9,6 +9,10 @@ from .chat_schema import SCHEMA_VERSION
 from .date_utils import week_range_for
 from .handoff import HANDOFF_STATUSES, HANDOFF_VERSION, HandoffError, is_expired
 from .goals import GoalError, load_goals, milestones_of, validate_goal
+from .planning import PlanningError, _validate_ref, validate_daily_plan, validate_weekly_plan
+from .evaluation import EvaluationError, validate_evaluation
+from .replan import ReplanError, validate_replan
+from .goal_design import GoalDesignError, load_design
 from .session import SESSION_STATUSES
 from .storage import (
     CHAT_IMPORT_PROMPT_NAME,
@@ -301,6 +305,118 @@ def run_doctor(root: Path) -> dict[str, Any]:
         checks.append("roadmap consistency")
     if (root / "data" / "goals" / "items").is_dir():
         checks.append("goals directory")
+
+    weekly_plans_ok = daily_plans_ok = links_ok = progress_ok = True
+    for path in sorted((root / "data" / "plans" / "weekly").glob("*.json")) if (root / "data" / "plans" / "weekly").is_dir() else []:
+        try:
+            value = read_json_file(path); validate_weekly_plan(value)
+            for item in (value.get("focus_items") or []) + (value.get("other_candidates") or []):
+                _validate_ref(root, item)
+        except (OSError, ValueError, PlanningError, GoalError) as exc:
+            issues.append(_issue("ERROR", f"週次目標計画を読み込めません: {path.name} ({exc})")); weekly_plans_ok = links_ok = False
+    for path in sorted((root / "data" / "plans" / "daily").glob("*.json")) if (root / "data" / "plans" / "daily").is_dir() else []:
+        try:
+            value = read_json_file(path); validate_daily_plan(value)
+            source = {"main": value.get("main_candidates") or [], "task": value.get("other_tasks") or []}
+            for link in value.get("goal_links") or []:
+                items = source.get(link["record_type"], [])
+                if not 1 <= link["record_index"] <= len(items): raise PlanningError("goal linkの参照先がありません")
+                _validate_ref(root, link)
+        except (OSError, ValueError, PlanningError, GoalError, KeyError) as exc:
+            issues.append(_issue("ERROR", f"日次目標計画を読み込めません: {path.name} ({exc})")); daily_plans_ok = links_ok = progress_ok = False
+    if weekly_plans_ok: checks.append("weekly goal plans")
+    if daily_plans_ok: checks.append("daily goal plans")
+    if links_ok: checks.append("goal links")
+    if progress_ok: checks.append("goal progress consistency")
+    planning_config = root / "config" / "planning.json"
+    if planning_config.exists():
+        try:
+            config = read_json_file(planning_config)
+            if not isinstance(config, dict) or not isinstance(config.get("max_daily_main"), int) or isinstance(config.get("max_daily_main"), bool) or not 1 <= config["max_daily_main"] <= 3:
+                raise ValueError("max_daily_mainは1〜3にしてください")
+        except (OSError, ValueError) as exc:
+            issues.append(_issue("ERROR", f"planning configが不正です: {exc}"))
+        else:
+            checks.append("planning config")
+
+    evaluations_ok = diagnostics_ok = coach_ok = True
+    for period_type, directory in (("week", root / "data" / "evaluations" / "weekly"), ("month", root / "data" / "evaluations" / "monthly")):
+        for path in sorted(directory.glob("*.json")) if directory.is_dir() else []:
+            try:
+                value = read_json_file(path); validate_evaluation(value, period_type=period_type)
+                known_goal_ids = {goal.get("id") for goal in goals}
+                if any(item.get("goal_id") not in known_goal_ids for item in value.get("goal_evaluations") or []): raise EvaluationError("存在しないgoalの評価があります")
+                if not all(isinstance(item, dict) and isinstance(item.get("code"), str) and isinstance(item.get("evidence"), list) for item in value.get("diagnostics") or []): raise EvaluationError("diagnosticsが不正です")
+                coach = value.get("coach_analysis")
+                if coach is not None and (not isinstance(coach, dict) or not isinstance(coach.get("evidence", []), list)): raise EvaluationError("coach分析が不正です")
+            except (OSError, ValueError, EvaluationError) as exc:
+                issues.append(_issue("ERROR", f"goal評価を読み込めません: {path.name} ({exc})")); evaluations_ok = diagnostics_ok = coach_ok = False
+    if evaluations_ok: checks.append("goal evaluations")
+    if diagnostics_ok: checks.append("goal diagnostics")
+    if coach_ok: checks.append("goal coach data")
+
+    replans_ok = application_ok = True
+    replan_dir = root / "data" / "replans"
+    for path in sorted(replan_dir.glob("replan-*.json")) if replan_dir.is_dir() else []:
+        try:
+            value = read_json_file(path); validate_replan(value)
+            known_goal_ids = {goal.get("id") for goal in goals}
+            if any(item.get("goal_id") is not None and item.get("goal_id") not in known_goal_ids for item in value.get("proposals") or []): raise ReplanError("存在しないgoalへのproposalがあります")
+            if value.get("status") == "applied" and not value.get("approved_proposal_ids"): raise ReplanError("適用済みreplanに承認proposalがありません")
+        except (OSError, ValueError, ReplanError) as exc:
+            issues.append(_issue("ERROR", f"replanを読み込めません: {path.name} ({exc})")); replans_ok = application_ok = False
+    if replans_ok: checks.append("goal replans")
+    if application_ok: checks.append("replan application consistency")
+
+    design_ok = True
+    design_dir = root / "data" / "goal-designs"
+    for path in sorted(design_dir.glob("design-*.json")) if design_dir.is_dir() else []:
+        try:
+            value = load_design(root, path.stem)
+            if value.get("status") == "applied" and value.get("applied_goal_id") not in {goal.get("id") for goal in goals}:
+                raise GoalDesignError("appliedなのに対応するgoalがありません")
+        except (OSError, ValueError, GoalDesignError) as exc:
+            issues.append(_issue("ERROR", f"目標設計セッションを読み込めません: {path.name} ({exc})"))
+            design_ok = False
+    if design_ok:
+        checks.append("goal design sessions")
+
+    transactions_ok = True
+    transaction_dir = root / "data" / "transactions"
+    for path in sorted(transaction_dir.glob("transaction-*.json")) if transaction_dir.is_dir() else []:
+        try:
+            value = read_json_file(path)
+            if not isinstance(value, dict) or value.get("status") not in {"committed", "rolled_back"}:
+                raise ValueError("未完了transactionです。元データを確認後、同じreplan applyを再実行してください")
+        except (OSError, ValueError) as exc:
+            issues.append(_issue("ERROR", f"transaction不整合: {path.name} ({exc})"))
+            transactions_ok = False
+    if transactions_ok:
+        checks.append("transaction recovery state")
+
+    applied_replans: list[dict[str, Any]] = []
+    for path in sorted(replan_dir.glob("replan-*.json")) if replan_dir.is_dir() else []:
+        try:
+            value = read_json_file(path)
+        except (OSError, ValueError):
+            continue
+        if isinstance(value, dict) and value.get("status") == "applied":
+            applied_replans.append(value)
+    history_replan_ids = {
+        item.get("replan_id")
+        for goal in goals
+        for item in goal.get("history") or []
+        if isinstance(item, dict) and item.get("source") == "replan"
+    }
+    missing_history = sorted(
+        value.get("id")
+        for value in applied_replans
+        if value.get("id") not in history_replan_ids and not value.get("transaction_id")
+    )
+    if missing_history:
+        issues.append(_issue("ERROR", f"適用済みreplanの履歴がありません: {', '.join(missing_history)}"))
+    else:
+        checks.append("replan history")
 
     try:
         source_root = Path(__file__).resolve().parents[2]

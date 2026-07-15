@@ -1,6 +1,6 @@
 # daily-review
 
-`daily-review` は、毎日の振り返り、翌日の指示書、実行結果をローカルのJSONとMarkdownに残すPython CLIです。v1.1.0では、自然文入力からChatGPTとの安全な受け渡し、明示的な承認までをローカルで扱います。
+`daily-review` は、毎日の振り返り、翌日の指示書、実行結果、目標ロードマップをローカルのJSONとMarkdownに残すPython CLIです。v1.2.0では、目標を週次・日次計画へ接続し、評価と再計画を明示承認付きで扱います。
 
 ## v1でできること
 
@@ -23,7 +23,7 @@ daily-review home
 
 途中で止まった場合は `daily-review chat --resume`、初回または更新した後は `daily-review migrate` と `daily-review v11-check`、トラブル時は `daily-review doctor` を実行します。`migrate` は不足している保存先だけを作成し、日次・週次・月次の既存データを変更しません。
 
-## v1.2開発中: 目標管理の基盤
+## v1.2: 目標管理
 
 目標は日次データとは独立して、`data/goals/items/`の1目標1ファイルとして保存します。物理削除は行わず、編集・状態変更・アーカイブの前には`data/backups/goals/`へ退避します。
 
@@ -43,7 +43,22 @@ daily-review goal archive goal-xxxxxxxx --yes
 
 `--qualitative`には「説明できる」のように達成を判断できる文章を指定します。`--metric`は`name|unit|baseline|target|direction`形式で、`increase`、`decrease`、`maintain`、`boolean`を指定できます。定性・定量指標から進捗を自動計算し、指標がない場合だけ`--manual-progress`を使えます。親目標には存在する未アーカイブ目標だけを指定でき、自己参照・循環参照・不自然な上位方向のlevel関係は拒否されます。
 
-### v1.2開発中: マイルストーンと実行ロードマップ
+### 目標設計をChatGPTと往復する
+
+`goal design`は曖昧な原文と回答をセッションに保存し、ChatGPTから受け取ったJSONを未適用proposalとして確認できます。外部APIには接続せず、`apply --yes`を実行するまでgoalを作成しません。
+
+```bash
+daily-review goal design --text "大学院入試に合格したい"
+daily-review goal design answer design-xxxxxxxx --answer "2026-08-31まで"
+daily-review goal design prompt design-xxxxxxxx
+daily-review goal design receive design-xxxxxxxx --file goal-proposal.json
+daily-review goal design review design-xxxxxxxx
+daily-review goal design apply design-xxxxxxxx --yes
+```
+
+適用はgoal JSONとdesign statusを同じ複数ファイル更新で保存します。同じdesignの二重適用は拒否します。
+
+### マイルストーンと実行ロードマップ
 
 目標は、期限・依存関係・実行ステップを持つマイルストーンへ分解できます。マイルストーンやステップの変更前には、目標JSON全体を`data/backups/goals/`へ退避します。削除は行わず、不要な項目は`cancelled`に変更してください。
 
@@ -58,6 +73,69 @@ daily-review goal next goal-xxxxxxxx
 `goal roadmap`は目標・マイルストーン・ステップの現在地を表示し、`goal next`は完了済み依存関係、期限、順序を考慮して次に進める1項目を選びます。`doing`のステップが優先されます。期限の整合性に関する警告を伴う追加・編集では、対話確認か非対話用の`--allow-warning`が必要です。
 
 マイルストーン同士は`daily-review goal milestone edit ... --depends-on mile-xxxxxxxx`、同じマイルストーン内のステップ同士は`daily-review goal milestone step edit ... --depends-on step-xxxxxxxx`で依存を設定できます。自己参照、存在しないID、循環、別目標・別マイルストーンへの依存は保存前に拒否します。フェーズ1のマイルストーンを持たない目標は、書き換えず空のロードマップとして読み込みます。
+
+### 週次重点と毎日のMain候補
+
+`plan`は進行中の目標から候補を出すだけで、日次レビューや既存の確定計画を自動変更しません。週は既存どおり火曜開始・月曜終了です。保存後も`apply`による明示承認が必要です。
+
+```bash
+daily-review plan week --date 2026-07-14 --save
+daily-review plan review --week 2026-07-14
+daily-review plan apply --week 2026-07-14 --yes
+daily-review plan today --date 2026-07-14 --save
+daily-review plan review --date 2026-07-14
+daily-review plan apply --date 2026-07-14 --yes
+```
+
+週次重点は最大5件、日次Main候補は最大3件です。候補はカテゴリ優先順位、期限、`doing`、依存関係を考慮します。`data/plans/weekly/`と`data/plans/daily/`に保存され、承認済み計画を編集するときはバックアップを作成します。
+
+日次計画の候補を目標へ明示的に結び、夜の記録からステップ状態の更新候補を確認できます。自動反映は行いません。
+
+```bash
+daily-review goal link --date 2026-07-14 --main-index 1 --goal goal-xxxxxxxx --milestone mile-xxxxxxxx --step step-xxxxxxxx
+daily-review goal progress --date 2026-07-14
+daily-review goal progress --date 2026-07-14 --apply --yes
+daily-review goal unlink --date 2026-07-14 --main-index 1
+```
+
+### 週次・月次評価
+
+評価は日次実績、承認済み計画、goal link、step状態を読み取り、目標別の状態と根拠、計画精度、診断、修正候補を独立JSONへ保存します。評価を承認しても目標や計画は変更されません。
+
+```bash
+daily-review goal evaluate week --date 2026-07-20 --save
+daily-review goal evaluate review --week 2026-07-14
+daily-review goal evaluate apply --week 2026-07-14 --yes
+daily-review goal evaluate month --month 2026-07 --save
+daily-review goal evaluate review --month 2026-07
+```
+
+週次評価は`data/evaluations/weekly/`、月次評価は`data/evaluations/monthly/`へ保存します。過去の進捗スナップショットがない最初の評価では、進捗差分を無理に推測せず現在値を基準にします。月次差分は保存済み週次評価の値だけから算出します。期限リスクは必要速度/実績速度が`1.0以下=low`、`1.0超〜1.5以下=medium`、`1.5超〜2.0未満=high`、`2.0以上=critical`で、根拠不足は予測不能と表示します。
+
+### 計画修正案と安全な適用
+
+`replan`は評価の診断から修正案を作ります。保存しただけでは適用されず、proposalを承認対象へ選んだ後、確認付きで適用します。全proposalを事前検証し、対象ファイルをバックアップしてから原子的に反映します。
+
+```bash
+daily-review goal replan --week 2026-07-14 --save
+daily-review goal replan list
+daily-review goal replan review replan-xxxxxxxx
+daily-review goal replan edit replan-xxxxxxxx --approve proposal-xxxxxxxx
+daily-review goal replan apply replan-xxxxxxxx --yes
+```
+
+適用履歴には`source: replan`、replan ID、proposal ID、変更フィールドを保存します。承認対象がないreplan、存在しない対象、不正日付、依存関係を壊す変更、バックアップに失敗した変更は反映しません。複数ファイル更新は`data/transactions/`にmanifestを残し、途中失敗時は元のJSONへrollbackします。
+
+### ChatGPTによる評価補助
+
+外部APIへ接続せず、保存済み評価をクリップボードでChatGPTへ渡せます。回答は評価の補助情報として保存するだけで、目標やreplanへ自動適用しません。
+
+```bash
+daily-review goal coach --week 2026-07-14 --copy
+daily-review goal coach-receive --week 2026-07-14 --clipboard
+daily-review goal coach --month 2026-07 --copy
+daily-review goal coach-receive --month 2026-07 --clipboard
+```
 
 ### 毎晩の推奨操作: ChatGPT往復フロー
 
@@ -352,11 +430,13 @@ daily-review doctor
 
 ## release-check
 
-`release-check` はv1.1.0のバージョン、package metadata、主要コマンド、テンプレート、スキーマ、ドキュメント、Git除外、migration定義を読み取り専用で確認します。実ユーザーデータが0件でも成功します。
+`release-check` はv1.2.0のバージョン、package metadata、主要コマンド、テンプレート、評価・replan・coachモジュール、ドキュメント、Git除外、migration定義を読み取り専用で確認します。`v12-check`は指定ルートの目標・計画・評価・replan・transactionを読み取り専用で点検します。
 
 ```bash
 daily-review release-check
 daily-review v11-check
+daily-review v12-check --verbose
+daily-review v12-check --json
 ```
 
 ## 保存構造とJSON
@@ -371,6 +451,14 @@ data/sessions/YYYY-MM-DD.json
 data/handoffs/YYYY-MM-DD.json
 data/backups/daily/YYYY-MM-DD_TIMESTAMP.json
 data/backups/drafts/YYYY-MM-DD_TIMESTAMP.json
+data/goals/items/goal-xxxxxxxx.json
+data/plans/weekly/YYYY-MM-DD_YYYY-MM-DD.json
+data/plans/daily/YYYY-MM-DD.json
+data/evaluations/weekly/YYYY-MM-DD_YYYY-MM-DD.json
+data/evaluations/monthly/YYYY-MM.json
+data/replans/replan-xxxxxxxx.json
+data/goal-designs/design-xxxxxxxx.json
+data/transactions/transaction-xxxxxxxxxxxx.json
 logs/YYYY-MM-DD.md
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
 logs/monthly_YYYY-MM.md
