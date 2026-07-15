@@ -1,0 +1,8 @@
+{
+  "confirmation_ttl_minutes": 30,
+  "max_commands_per_request": 20,
+  "max_raw_input_length": 20000,
+  "max_items_per_field": 100,
+  "audit_log_enabled": true,
+  "idempotency_retention_days": 90
+}

@@ -14,6 +14,7 @@ from .evaluation import EvaluationError, validate_evaluation
 from .replan import ReplanError, validate_replan
 from .goal_design import GoalDesignError, load_design
 from .notifications import NotificationError, load_history as load_notification_history, load_notification_config
+from .command_api import CommandApiError, load_api_config, load_audit_history
 from .session import SESSION_STATUSES
 from .storage import (
     CHAT_IMPORT_PROMPT_NAME,
@@ -70,6 +71,8 @@ def run_doctor(root: Path) -> dict[str, Any]:
                 issues.append(_issue("WARN", "data/sessions がありません。daily-review chat 実行時に自動作成されます"))
             elif relative == Path("data/handoffs"):
                 issues.append(_issue("WARN", "data/handoffs がありません。daily-review handoff 実行時に自動作成されます"))
+            elif relative.parts[:2] == ("data", "api"):
+                issues.append(_issue("WARN", f"{relative} がありません。daily-review api 実行時に自動作成されます"))
             else:
                 issues.append(_issue("ERROR", f"必要なディレクトリがありません: {relative}"))
         elif not os.access(path, os.W_OK):
@@ -428,6 +431,14 @@ def run_doctor(root: Path) -> dict[str, Any]:
         checks.append("notification config and history")
 
     try:
+        load_api_config(root)
+        load_audit_history(root)
+    except (CommandApiError, OSError, ValueError) as exc:
+        issues.append(_issue("ERROR", f"Command API設定または監査履歴が不正です: {exc}"))
+    else:
+        checks.append("command api config and audit")
+
+    try:
         source_root = Path(__file__).resolve().parents[2]
         gitignore = (source_root / ".gitignore").read_text(encoding="utf-8")
         ignored_runtime_paths = (
@@ -435,6 +446,7 @@ def run_doctor(root: Path) -> dict[str, Any]:
             "logs/",
             "config/priorities.json",
             "config/notifications.json",
+            "config/api.json",
             "exports/",
         )
         if all(value in gitignore for value in ignored_runtime_paths):

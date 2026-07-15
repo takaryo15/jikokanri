@@ -8,6 +8,7 @@ logs/
 backups/
 config/priorities.json
 config/notifications.json
+config/api.json
 exports/
 *.zip
 .venv-release-test/

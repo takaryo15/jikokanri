@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import platform
 import subprocess
 import sys
@@ -89,6 +90,9 @@ from .notifications import (
     ConsoleSender, FileSender, NotificationError, dispatch_notifications, evaluate_notifications,
     load_history as load_notification_history, load_notification_config, parse_current,
 )
+from .command_api import CommandExecutor, load_audit_history
+from .command_models import COMMAND_MODELS, ApiIssue, CommandRequest, CommandResponse
+from .review_normalizer import NormalizationError, normalize_review
 
 
 app = typer.Typer(
@@ -106,6 +110,8 @@ design_app = typer.Typer(help="ChatGPTと往復する目標設計セッション
 tasks_app = typer.Typer(help="日次指示書と目標計画のタスクを一覧表示します。")
 export_app = typer.Typer(help="保存済みデータを分析用ファイルへ出力します。")
 notifications_app = typer.Typer(help="通知候補の判定、送信、履歴確認を行います。")
+api_app = typer.Typer(help="ChatGPTや外部プログラム向けのversioned JSON Command APIです。")
+parse_app = typer.Typer(help="自然言語を安全な構造へルールベースで正規化します。")
 app.add_typer(goal_app, name="goal")
 app.add_typer(plan_app, name="plan")
 goal_app.add_typer(milestone_app, name="milestone")
@@ -116,6 +122,8 @@ goal_app.add_typer(design_app, name="design")
 app.add_typer(tasks_app, name="tasks")
 app.add_typer(export_app, name="export")
 app.add_typer(notifications_app, name="notifications")
+app.add_typer(api_app, name="api")
+app.add_typer(parse_app, name="parse")
 
 
 @app.callback()
@@ -904,6 +912,192 @@ def notifications_history(
         return
     for item in values:
         typer.echo(f"- {item.get('attempted_at', '未記録')} [{item.get('status', '不明')}] {item.get('notification_type', '不明')} -> {item.get('destination', '不明')}")
+
+
+def _api_exit_code(response: CommandResponse) -> int:
+    if not response.errors or response.status in {"partial_success"}:
+        return 0
+    codes = {item.code for item in response.errors}
+    if codes & {"CONFIRMATION_REQUIRED", "TASK_AMBIGUOUS", "TASK_NOT_FOUND"}:
+        return 3
+    if codes & {
+        "IDEMPOTENCY_CONFLICT",
+        "CONFIRMATION_INVALID",
+        "CONFIRMATION_EXPIRED",
+        "PREVIEW_STALE",
+        "DUPLICATE_REVIEW",
+        "INSTRUCTION_ALREADY_APPROVED",
+    }:
+        return 4
+    if "STORAGE_ERROR" in codes:
+        return 5
+    return 2
+
+
+def _emit_api_response(response: CommandResponse, *, pretty: bool) -> None:
+    typer.echo(
+        json.dumps(
+            response.model_dump(mode="json"),
+            ensure_ascii=False,
+            indent=2 if pretty else None,
+            separators=None if pretty else (",", ":"),
+        )
+    )
+    code = _api_exit_code(response)
+    if code:
+        raise typer.Exit(code=code)
+
+
+@api_app.command("execute")
+def api_execute(
+    input_path: Path | None = typer.Option(None, "--input", help="CommandRequest JSONファイル"),
+    stdin: bool = typer.Option(False, "--stdin", help="標準入力からJSONを読む"),
+    mode: str | None = typer.Option(None, "--mode", help="requestのmodeをpreviewまたはcommitで上書き"),
+    confirmation_token: str | None = typer.Option(None, "--confirmation-token", help="previewで発行された確認トークン"),
+    pretty: bool = typer.Option(False, "--pretty", help="JSONをインデントして表示"),
+    root: Path | None = RootOption,
+) -> None:
+    """JSON CommandRequestを安全に実行します。
+
+    previewは主要データを変更せず、commitに必要なconfirmation tokenを返します。
+    書き込みcommitにはpreview済みtokenとidempotency keyが必要です。
+    --inputまたは--stdinで受け取り、stdoutにはJSONだけを出力します。
+    終了コード: 0 成功、2 入力、3 確認、4 競合、5 保存エラー。
+    例: daily-review api execute --input request.json --pretty
+    """
+    raw: Any = {}
+    try:
+        if (input_path is None) == (not stdin):
+            raise ValueError("--inputまたは--stdinのどちらか一方を指定してください")
+        text = sys.stdin.read() if stdin else input_path.read_text(encoding="utf-8")
+        if not text.strip():
+            raise ValueError("入力JSONが空です")
+        raw = json.loads(text)
+        if not isinstance(raw, dict):
+            raise ValueError("入力はJSONオブジェクトにしてください")
+        if mode is not None:
+            if mode not in {"preview", "commit"}:
+                raise ValueError("--modeはpreviewまたはcommitにしてください")
+            raw["mode"] = mode
+        if confirmation_token is not None:
+            raw["confirmation_token"] = confirmation_token
+        response = CommandExecutor(_root(root)).execute(raw)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        response = CommandResponse(
+            request_id=str(raw.get("request_id", "unknown")) if isinstance(raw, dict) else "unknown",
+            status="input_error",
+            mode="preview",
+            summary="入力JSONを読み込めません",
+            errors=[{"code": "INVALID_REQUEST", "message": str(exc), "recoverable": True}],
+            metadata={},
+        )
+    _emit_api_response(response, pretty=pretty)
+
+
+@api_app.command("schema")
+def api_schema(
+    schema_type: str = typer.Option("all", "--type", help="request / response / all"),
+    command: str | None = typer.Option(None, "--command", help="特定commandのschema"),
+    pretty: bool = typer.Option(True, "--pretty/--compact", help="整形JSONまたはcompact JSON"),
+) -> None:
+    """実装と同じPydanticモデルからJSON Schemaを出力します。
+
+    request、response、または個別commandの機械可読schemaを確認できます。
+    例: daily-review api schema --type request
+    """
+    if command:
+        model = COMMAND_MODELS.get(command)
+        if model is None:
+            typer.echo(json.dumps({"error": {"code": "UNKNOWN_COMMAND", "message": f"不明なcommandです: {command}"}}, ensure_ascii=False))
+            raise typer.Exit(code=2)
+        value: dict[str, Any] = {"version": "1", "command": command, "schema": model.model_json_schema()}
+    elif schema_type == "request":
+        value = CommandRequest.model_json_schema()
+    elif schema_type == "response":
+        value = CommandResponse.model_json_schema()
+    elif schema_type == "all":
+        value = {"version": "1", "request": CommandRequest.model_json_schema(), "response": CommandResponse.model_json_schema()}
+    else:
+        typer.echo(json.dumps({"error": {"code": "INVALID_REQUEST", "message": "--typeはrequest、response、allにしてください"}}, ensure_ascii=False))
+        raise typer.Exit(code=2)
+    typer.echo(json.dumps(value, ensure_ascii=False, indent=2 if pretty else None, separators=None if pretty else (",", ":")))
+
+
+@api_app.command("history")
+def api_history(
+    date: str | None = DateOption,
+    request_id: str | None = typer.Option(None, "--request-id"),
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key"),
+    pretty: bool = typer.Option(False, "--pretty"),
+    root: Path | None = RootOption,
+) -> None:
+    """raw_inputを含まないCommand API監査履歴をJSONで表示します。
+
+    日付、request ID、idempotency keyで絞り込めます。
+    例: daily-review api history --date 2026-07-15 --pretty
+    """
+    try:
+        values = load_audit_history(_root(root), date=date, request_id=request_id, idempotency_key=idempotency_key)
+        output = {"count": len(values), "records": values}
+    except (OSError, ValueError) as exc:
+        output = {"count": 0, "records": [], "errors": [{"code": "STORAGE_ERROR", "message": str(exc)}]}
+        typer.echo(json.dumps(output, ensure_ascii=False, indent=2 if pretty else None))
+        raise typer.Exit(code=5) from exc
+    typer.echo(json.dumps(output, ensure_ascii=False, indent=2 if pretty else None, separators=None if pretty else (",", ":")))
+
+
+@parse_app.command("review")
+def parse_review_command(
+    text: str | None = typer.Option(None, "--text", help="解析する自然文"),
+    stdin: bool = typer.Option(False, "--stdin", help="標準入力から自然文を読む"),
+    date: str | None = DateOption,
+    preview: bool = typer.Option(False, "--preview", help="正規化結果をCommand APIでpreview"),
+    commit: bool = typer.Option(False, "--commit", help="confirmation tokenを使って確定"),
+    confirmation_token: str | None = typer.Option(None, "--confirmation-token"),
+    idempotency_key: str | None = typer.Option(None, "--idempotency-key"),
+    pretty: bool = typer.Option(False, "--pretty"),
+    root: Path | None = RootOption,
+) -> None:
+    """日本語レビューを保持したままルールベースで正規化します。
+
+    オプションなしはparse only、--previewは主要データ非更新の変更確認です。
+    --commitには同じ入力のpreviewで発行されたconfirmation tokenが必要です。
+    --textまたは--stdinのどちらか一方を使用します。
+    例: daily-review parse review --stdin --date 2026-07-15 --preview
+    """
+    try:
+        if (text is None) == (not stdin):
+            raise NormalizationError("--textまたは--stdinのどちらか一方を指定してください")
+        if preview and commit:
+            raise NormalizationError("--previewと--commitは同時に指定できません")
+        raw_text = sys.stdin.read() if stdin else text or ""
+        day = _day(date)
+        parsed = normalize_review(raw_text, effective_date=day)
+    except (NormalizationError, ValueError) as exc:
+        output = {"status": "input_error", "errors": [{"code": "INVALID_REQUEST", "message": str(exc), "recoverable": True}]}
+        typer.echo(json.dumps(output, ensure_ascii=False, indent=2 if pretty else None))
+        raise typer.Exit(code=2) from exc
+    if not preview and not commit:
+        typer.echo(json.dumps(parsed, ensure_ascii=False, indent=2 if pretty else None, separators=None if pretty else (",", ":")))
+        return
+    normalized = parsed["normalized"]
+    stable_key = idempotency_key or f"parse-review-{normalized['date']}-{hashlib.sha256(raw_text.encode()).hexdigest()[:12]}"
+    request = {
+        "version": "1",
+        "idempotency_key": stable_key,
+        "mode": "commit" if commit else "preview",
+        "timezone": "Asia/Tokyo",
+        "effective_date": normalized["date"],
+        "source": "parse_review",
+        "raw_input": raw_text,
+        "confirmation_token": confirmation_token,
+        "commands": [{"type": "create_daily_review", "payload": normalized}],
+    }
+    response = CommandExecutor(_root(root)).execute(request)
+    for warning in parsed["warnings"]:
+        response.warnings.append(ApiIssue(code=warning["code"], message=warning["message"], details={key: value for key, value in warning.items() if key not in {"code", "message"}}))
+    response.result["normalization"] = {"normalized": normalized, "confidence": parsed["confidence"]}
+    _emit_api_response(response, pretty=pretty)
 
 
 def _goal_error(message: str, *, code: int = 2) -> None:
@@ -4285,7 +4479,7 @@ def release_check(root: Path | None = RootOption) -> None:
         "home", "summary", "start", "next", "doctor", "weekly", "monthly", "backup", "restore",
         "chat", "chat-prompt", "chat-import", "handoff", "receive", "handoff-list", "handoff-cancel",
         "input", "organize", "review", "edit-draft", "approve", "reflect", "migrate", "v11-check", "v12-check",
-        "goal", "plan", "tasks", "export", "notifications",
+        "goal", "plan", "tasks", "export", "notifications", "api", "parse",
     }
     missing_commands = sorted(required_commands - command_names)
     if missing_commands:
@@ -4321,6 +4515,11 @@ def release_check(root: Path | None = RootOption) -> None:
         errors.append("config/priorities.example.json がありません")
     if not (source_root / "config" / "notifications.example.json").is_file():
         errors.append("config/notifications.example.json がありません")
+    if not (source_root / "config" / "api.example.json").is_file():
+        errors.append("config/api.example.json がありません")
+    for name in ("command_models.py", "command_api.py", "review_normalizer.py"):
+        if not (source_root / "src" / "daily_review" / name).is_file():
+            errors.append(f"v1.3 Command APIモジュールがありません: {name}")
     for name in ("README.md", "CHANGELOG.md", "RELEASE_CHECKLIST.md", "RELEASE_CHECKLIST_V1.2.md", "tests/test_v11_e2e.py"):
         if not (source_root / name).is_file():
             errors.append(f"リリース必須ファイルがありません: {name}")
@@ -4331,6 +4530,7 @@ def release_check(root: Path | None = RootOption) -> None:
             "logs/",
             "config/priorities.json",
             "config/notifications.json",
+            "config/api.json",
             "exports/",
         )
         if not all(value in ignored for value in ignored_runtime_paths):
@@ -4374,6 +4574,7 @@ def release_check(root: Path | None = RootOption) -> None:
     typer.echo("OK   v1.2 final migration")
     typer.echo("OK   runtime data ignored by git")
     typer.echo("OK   v1.3 task, export, and notification foundations")
+    typer.echo("OK   v1.3 command api and normalization foundations")
     typer.echo("v1.2.0 is ready")
 
 

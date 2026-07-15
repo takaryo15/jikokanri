@@ -4,6 +4,14 @@
 
 ### Added
 
+- ChatGPTや外部プログラム向けのversioned Command APIとPydantic JSON Request/Response schema。
+- request・changes・state hashに結び付いたpreview/commit confirmation tokenと期限・stale検査。
+- commit再送を安全に返し、同一keyの内容変更を拒否する永続idempotency記録。
+- atomic/best_effortの一括command、単純な前方結果参照、構造化error/warning。
+- 日次レビュー、タスク作成・更新・完了・延期・一覧、指示書生成・修正・承認・取得command。
+- 見出し・箇条書き・否定・最低限・相対日付を保守的に扱う日本語レビュー正規化。
+- `daily-review api execute/schema/history`と`daily-review parse review`。
+- 原文を二重保存しないCommand API監査履歴と、ChatGPT連携API仕様書。
 - 既存の日次指示書と目標日次計画を統合表示する`daily-review tasks list`、主要フィルター、詳細表示、JSON出力。
 - 対話・個別オプション・JSON標準入力に対応する`daily-review review quick`と、dry-run、同日更新前バックアップ。
 - reviews・tasks・instructionsを固定列で出力する`daily-review export csv`、期間指定、UTF-8 BOM、決定的な出力。
@@ -17,6 +25,9 @@
 
 ### Safety
 
+- previewでは主要データを変更せず、commit時は確認token・request hash・state hashを再検証します。
+- 複数commandの主要保存を一時ファイルとrollback付きで一括置換し、曖昧なタスク候補を自動選択しません。
+- Mainの4件目以降と分類不能な自然文をoptional・backlog・unclassifiedへ保持します。
 - クイックレビューは原入力をinboxへ先に保存し、日次JSONの失敗時にも生ログを維持します。
 - 明日やることの先頭3件だけをMain候補にし、残りをバックログ候補へ保持して自動承認しません。
 - CSVは既存出力を明示的な`--force`なしに上書きせず、数式開始文字を無害化します。

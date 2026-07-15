@@ -169,10 +169,47 @@ def _goal_plan_tasks(root: Path, known: set[tuple[str, str]]) -> list[dict[str, 
     return result
 
 
+def _api_tasks(root: Path) -> list[dict[str, Any]]:
+    path = root / "data" / "api" / "tasks.json"
+    if not path.exists():
+        return []
+    value = read_json_file(path)
+    if not isinstance(value, dict) or not isinstance(value.get("tasks"), list):
+        raise TaskQueryError("APIタスクJSONの形式が不正です")
+    result = []
+    for item in value["tasks"]:
+        if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+            raise TaskQueryError("APIタスクの形式が不正です")
+        task_id = item["id"]
+        result.append(
+            {
+                "id": task_id,
+                "short_id": task_id[-8:],
+                "title": _text(item.get("title")) or "未設定",
+                "description": _text(item.get("description")),
+                "status": _text(item.get("status")) or "pending",
+                "priority": _priority(item.get("priority"), is_main=bool(item.get("is_main"))),
+                "category": _text(item.get("category")),
+                "due_date": _text(item.get("due_date")),
+                "is_main": bool(item.get("is_main")),
+                "is_minimum": bool(_text(item.get("minimum_line")).strip()),
+                "minimum_line": _text(item.get("minimum_line")),
+                "minimum_achieved": item.get("minimum_achieved"),
+                "source_review_date": _text(item.get("source_review_date")),
+                "created_at": _text(item.get("created_at")),
+                "updated_at": _text(item.get("updated_at")),
+                "completed_at": _text(item.get("completed_at")),
+                "source": "command_api",
+            }
+        )
+    return result
+
+
 def collect_tasks(root: Path) -> list[dict[str, Any]]:
     tasks = _daily_tasks(root)
     known = {(item["due_date"], item["title"]) for item in tasks}
     tasks.extend(_goal_plan_tasks(root, known))
+    tasks.extend(_api_tasks(root))
     # Keep stable source identity.  The same legacy ID on different days is
     # valid, so only collapse exact source/date/ID duplicates.
     unique: dict[tuple[str, str, str], dict[str, Any]] = {}

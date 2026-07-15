@@ -328,6 +328,69 @@ daily-review notifications history
 
 現フェーズでは外部通知サービス、自動スケジューラー、ChatGPT APIによる自動解析は実装していません。
 
+## v1.3 開発中: ChatGPT Command API
+
+ChatGPTや外部プログラムは、version `1`のJSON CommandRequestを使って、日次レビュー、タスク、指示書を同じ入口から操作できます。HTTPや外部LLM APIは使わず、CLIからローカルのアプリケーション層を呼び出します。
+
+preview用の`request.json`例です。
+
+```json
+{
+  "version": "1",
+  "request_id": "req_example_001",
+  "idempotency_key": "review-2026-07-15",
+  "mode": "preview",
+  "timezone": "Asia/Tokyo",
+  "effective_date": "2026-07-15",
+  "source": "chatgpt",
+  "raw_input": "今日の振り返り...",
+  "commands": [
+    {
+      "type": "create_daily_review",
+      "payload": {
+        "date": "2026-07-15",
+        "done": ["自己管理システムの開発を進めた", "筋トレに行った"],
+        "not_done": ["院試勉強"],
+        "causes": ["薬で眠かった", "就寝が遅かった"],
+        "tomorrow": ["院試過去問を1年分進める"],
+        "minimum": ["過去問を1問解く"],
+        "journal": "開発はかなり進んだ。"
+      }
+    }
+  ]
+}
+```
+
+```bash
+daily-review api execute --input request.json --pretty
+cat request.json | daily-review api execute --stdin
+daily-review api schema --type request
+daily-review api schema --type response
+daily-review api history
+```
+
+preview responseの`confirmation_token`を確認後、同じrequest内容をcommitします。CLIオプションはJSON内のmodeとtokenを上書きします。
+
+```bash
+daily-review api execute --input request.json --mode commit --confirmation-token confirm_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx --pretty
+```
+
+自然文を解析するだけ、またはCommand APIへpreviewすることもできます。
+
+```bash
+cat review.txt | daily-review parse review --stdin --date 2026-07-15
+cat review.txt | daily-review parse review --stdin --date 2026-07-15 --preview --idempotency-key review-2026-07-15
+```
+
+- previewは日次・タスク・指示書を変更しません。commitに必要な確認・監査・idempotency補助記録だけを`data/api/`へ保存します。
+- commitは既定30分以内のtokenを要求し、request内容と対象データがpreview時から変わっていないか再検証します。
+- 同じidempotency keyと同じ内容の再送は二重保存せず、異なる内容は拒否します。
+- 曖昧なタスク名は候補一覧を返し、勝手に変更しません。
+- raw inputとunclassifiedを保持し、Mainは最大3件、4件目以降はoptionalまたはbacklogへ残します。
+- 指示書案は`approve_instruction`commandなしに確定されません。
+
+全command、構造化エラー、一括実行、保存仕様は[ChatGPT Command API仕様](docs/chatgpt-command-api.md)を参照してください。
+
 ## 設計思想
 
 - 生ログは加工せず保存します。
@@ -523,12 +586,17 @@ data/goal-designs/design-xxxxxxxx.json
 data/transactions/transaction-xxxxxxxxxxxx.json
 data/notifications/history.json
 data/notifications/events/notification-xxxxxxxxxxxx.json
+data/api/tasks.json
+data/api/audit/audit-xxxxxxxx.json
+data/api/confirmations/confirm_xxxxxxxx.json
+data/api/idempotency/HASH.json
 logs/YYYY-MM-DD.md
 logs/weekly_YYYY-MM-DD_YYYY-MM-DD.md
 logs/monthly_YYYY-MM.md
 templates/
 config/priorities.json
 config/notifications.json
+config/api.json
 exports/
 backups/
 ```
@@ -542,9 +610,10 @@ backups/
 - `sessions`: 進行状態
 - `backups`: 上書き前の退避
 - `notifications`: 通知イベントと送信履歴
+- `api`: APIタスク、confirmation、idempotency、監査履歴
 - `exports`: CSVのデフォルト出力先（Git管理外）
 
-`config/notifications.example.json`は通知設定の配布用サンプルです。個人用の`config/notifications.json`はGit管理しません。
+`config/notifications.example.json`と`config/api.example.json`は配布用サンプルです。個人用の`config/notifications.json`と`config/api.json`はGit管理しません。
 
 ドラフト承認で保存する当日の候補・分類結果は、既存の `structured_review` と `tomorrow_plan_proposal` に反映します。確定版タスクに紐付かない当日結果、問題、未分類などは、後方互換な任意フィールド `draft_approval` に保存します。
 
