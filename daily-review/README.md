@@ -615,6 +615,10 @@ data/goal-designs/design-xxxxxxxx.json
 data/transactions/transaction-xxxxxxxxxxxx.json
 data/notifications/history.json
 data/notifications/events/notification-xxxxxxxxxxxx.json
+data/scheduler/history.json
+data/scheduler/audit/flow-xxxxxxxx.json
+data/scheduler/idempotency/HASH.json
+data/scheduler/locks/HASH.lock/
 data/api/tasks.json
 data/api/audit/audit-xxxxxxxx.json
 data/api/confirmations/confirm_xxxxxxxx.json
@@ -634,6 +638,7 @@ config/priorities.json
 config/notifications.json
 config/api.json
 config/recovery.json
+config/scheduler.json
 exports/
 backups/
 ```
@@ -647,11 +652,12 @@ backups/
 - `sessions`: 進行状態
 - `backups`: 上書き前の退避
 - `notifications`: 通知イベントと送信履歴
+- `scheduler`: job実行履歴、flow監査、冪等性、短時間の実行lock
 - `api`: APIタスク、confirmation、idempotency、監査履歴
 - `restore` / `rollover` / `repairs`: preview-first操作の履歴と冪等性記録
 - `exports`: CSVのデフォルト出力先（Git管理外）
 
-`config/notifications.example.json`、`config/api.example.json`、`config/recovery.example.json`は配布用サンプルです。個人用の`config/notifications.json`、`config/api.json`、`config/recovery.json`はGit管理しません。
+`config/notifications.example.json`、`config/api.example.json`、`config/recovery.example.json`、`config/scheduler.example.json`は配布用サンプルです。個人用の同名設定（`.example`なし）はGit管理しません。
 
 ドラフト承認で保存する当日の候補・分類結果は、既存の `structured_review` と `tomorrow_plan_proposal` に反映します。確定版タスクに紐付かない当日結果、問題、未分類などは、後方互換な任意フィールド `draft_approval` に保存します。
 
@@ -681,13 +687,47 @@ backups/
 - 復元対象を確認する: `daily-review restore path/to/backup.zip --dry-run`
 - CLIの一覧を確認する: `daily-review --help`
 
+## v1.3開発中：自動実行
+
+毎日の入口は引き続き`daily-review home`です。スケジューラーを手動確認する場合は次を使います。
+
+```bash
+daily-review scheduler status
+daily-review scheduler due
+daily-review scheduler run-due --dry-run
+daily-review scheduler history
+daily-review scheduler history --status failed
+daily-review scheduler doctor
+```
+
+朝・夜・週次・月次のまとまった確認は、次の安全な運用フローで実行できます。
+
+```bash
+daily-review flow morning
+daily-review flow nightly
+daily-review flow weekly
+daily-review flow monthly
+```
+
+macOSではlaunchdを推奨します。launchdは15分ごとに`run-due`を呼ぶだけで、時刻、grace period、missed run、retry、同一schedule slotの重複防止はdaily-review内部で判定します。PCスリープ後もgrace period内なら1回だけ回復実行し、retryはプロセスをsleepさせず次回pollで行います。quiet hours中の通知は許可時刻まで保留します。
+
+自動起動は明示的にinstallした場合だけ有効です。最初に必ずpreviewしてください。
+
+```bash
+daily-review scheduler install --dry-run
+daily-review scheduler install
+daily-review scheduler status
+```
+
+`daily-review scheduler uninstall`はlaunchd登録だけを外し、日次データ、job履歴、監査履歴を削除しません。launchdを使えない環境では`daily-review scheduler cron-example`で例を表示できます。設定と安全境界の詳細は[スケジューラー運用](docs/scheduler.md)、[launchd](docs/launchd.md)、[運用フロー](docs/operational-flows.md)、[トラブルシューティング](docs/troubleshooting-scheduler.md)を参照してください。
+
 ## v1で実装しないもの
 
-外部サービス連携、通知の自動スケジュール実行、LLM呼び出し、自動承認、自動計画変更はv1の対象外です。v1.3開発版の通知はConsole/Fileへの明示実行だけです。
+外部サービス連携、LLM呼び出し、自動承認、自動計画変更は対象外です。v1.3開発版の自動通知はローカルのConsole/File senderだけを使います。
 
 ## 今後の候補
 
-将来の候補として、週次・月次の集計CSV、外部通知sender、自動スケジューラー、運用テンプレートの追加、より詳細なローカル分析があります。いずれも自動実行しません。
+将来の候補として、外部通知sender、運用テンプレートの追加、より詳細なローカル分析があります。
 
 ## 開発・テスト
 

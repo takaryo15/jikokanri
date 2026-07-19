@@ -1,0 +1,29 @@
+{
+  "enabled": false,
+  "timezone": "Asia/Tokyo",
+  "poll_interval_minutes": 15,
+  "lock_timeout_minutes": 30,
+  "history_retention_days": 90,
+  "jobs": {
+    "review_reminder": {
+      "enabled": true,
+      "time": "21:00",
+      "grace_minutes": 180,
+      "missed_run_policy": "run_once"
+    },
+    "weekly_report_generate": {
+      "enabled": true,
+      "weekday": "monday",
+      "time": "22:30",
+      "grace_minutes": 720,
+      "missed_run_policy": "run_once"
+    },
+    "monthly_report_generate": {
+      "enabled": true,
+      "day": "last",
+      "time": "23:00",
+      "grace_minutes": 1440,
+      "missed_run_policy": "run_once"
+    }
+  }
+}

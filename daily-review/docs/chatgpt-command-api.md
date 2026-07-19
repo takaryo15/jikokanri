@@ -118,3 +118,17 @@ daily-review api history --idempotency-key review-2026-07-15
 監査ログはrequest hashとraw input hashだけを保存し、原文を二重保存しません。JSONから任意の保存パスは指定できません。commandは最大20件、raw inputは最大20,000文字、各配列は最大100件です。個人設定はGit管理外の`config/api.json`、配布例は`config/api.example.json`です。
 
 曖昧なタスク候補は勝手に変更せず候補一覧を返します。Mainは先頭3件までで、4件目以降はoptionalまたはbacklogへ保持します。指示書は`approve_instruction`なしに確定されません。
+
+## Scheduler and operational flows
+
+API version 1 additionally supports the read-only commands `scheduler_status`,
+`scheduler_due`, and `scheduler_history`. These return immediately without a
+confirmation token.
+
+The write commands `scheduler_run_due`, `scheduler_run_job`,
+`run_morning_flow`, `run_nightly_flow`, `run_weekly_flow`, and
+`run_monthly_flow` use the existing preview/commit, confirmation token,
+idempotency, and audit flow. Their preview is a real dry-run and does not write
+scheduler history, reports, notifications, backups, approvals, or rollover
+changes. A committed nightly flow may generate an unapproved instruction
+draft, but it never approves the instruction or applies rollover.

@@ -4,6 +4,12 @@
 
 ### Added
 
+- poll方式の内部scheduler、14種類のjob、due判定、schedule slot、grace period、missed run recovery。
+- 永続job履歴、次回poll型retry/backoff、scheduler/job lock、stale lock診断。
+- `scheduler status/list/due/run-due/run/history/doctor/install/uninstall`とcron設定例。
+- morning/nightly/weekly/monthlyの運用フロー、火曜〜月曜の週次draft、前月比較付き月次draft。
+- macOS launchd plistの安全な生成・dry-run・明示installと、quiet hours通知保留。
+- schedulerと運用フローのCommand API command、およびschedule・retry・launchd・E2Eテスト。
 - manifest、size、SHA-256、件数、data versionを持つ検証可能なZIPバックアップと`backup create/list/inspect/verify/delete`。
 - restoreのmerge/replace/missing-only preview、stale検出付きconfirmation token、復元前自動バックアップ、復元履歴。
 - タスクを複製せず元期限と繰越回数を保持する`rollover preview/apply/history`、長期未完了警告・分解提案。

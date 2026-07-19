@@ -24,6 +24,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "reminder_review": {"enabled": True, "time": "21:00"},
     "instruction_approval": {"enabled": True},
     "task_alerts": {"enabled": True},
+    "quiet_hours": {"enabled": False, "start": "00:00", "end": "07:00"},
     "deduplication_hours": 24,
 }
 
@@ -121,6 +122,7 @@ def load_notification_config(root: Path) -> dict[str, Any]:
         "reminder_review",
         "instruction_approval",
         "task_alerts",
+        "quiet_hours",
     ):
         if not isinstance(config[section].get("enabled"), bool):
             raise NotificationError(f"{section}.enabledはtrueまたはfalseにしてください")
@@ -130,6 +132,13 @@ def load_notification_config(root: Path) -> dict[str, Any]:
         raise NotificationError(
             "reminder_review.timeはHH:MM形式にしてください"
         ) from exc
+    for key in ("start", "end"):
+        try:
+            datetime.strptime(config["quiet_hours"][key], "%H:%M")
+        except (TypeError, ValueError) as exc:
+            raise NotificationError(
+                f"quiet_hours.{key}はHH:MM形式にしてください"
+            ) from exc
     hours = config["deduplication_hours"]
     if not isinstance(hours, int) or isinstance(hours, bool) or hours < 0:
         raise NotificationError("deduplication_hoursは0以上の整数にしてください")
@@ -148,6 +157,35 @@ def _notification(
         message,
         hashlib.sha256(raw.encode("utf-8")).hexdigest(),
     )
+
+
+def make_notification(
+    kind: str, day: str, entity: str, title: str, message: str
+) -> Notification:
+    """Build a stable notification for scheduler and flow integrations."""
+    parse_date(day)
+    return _notification(kind, day, entity, title, message)
+
+
+def quiet_hours_end(current: datetime, config: dict[str, Any]) -> datetime | None:
+    """Return the next allowed time when current is inside quiet hours."""
+    quiet = config["quiet_hours"]
+    if not quiet["enabled"]:
+        return None
+    start = datetime.strptime(quiet["start"], "%H:%M").time()
+    end = datetime.strptime(quiet["end"], "%H:%M").time()
+    now_time = current.timetz().replace(tzinfo=None)
+    if start == end:
+        return None
+    if start < end:
+        if not start <= now_time < end:
+            return None
+        return datetime.combine(current.date(), end, current.tzinfo)
+    if now_time >= start:
+        return datetime.combine(current.date() + timedelta(days=1), end, current.tzinfo)
+    if now_time < end:
+        return datetime.combine(current.date(), end, current.tzinfo)
+    return None
 
 
 def evaluate_notifications(

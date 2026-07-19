@@ -16,5 +16,10 @@
   "task_alerts": {
     "enabled": true
   },
+  "quiet_hours": {
+    "enabled": false,
+    "start": "00:00",
+    "end": "07:00"
+  },
   "deduplication_hours": 24
 }

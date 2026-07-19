@@ -126,6 +126,31 @@ class ListTasksPayload(ApiModel):
     all: bool = False
 
 
+class SchedulerAtPayload(ApiModel):
+    at: str | None = None
+
+
+class SchedulerHistoryPayload(ApiModel):
+    job: StrictStr | None = Field(default=None, min_length=1, max_length=200)
+    status: StrictStr | None = Field(default=None, min_length=1, max_length=100)
+    date: str | None = None
+
+
+class SchedulerRunJobPayload(SchedulerAtPayload):
+    job: StrictStr = Field(min_length=1, max_length=200)
+    force: bool = False
+
+
+class FlowDatePayload(SchedulerAtPayload):
+    date: str | None = None
+    force: bool = False
+
+
+class FlowMonthPayload(SchedulerAtPayload):
+    month: str | None = None
+    force: bool = False
+
+
 class CreateDailyReviewCommand(ApiModel):
     type: Literal["create_daily_review"]
     payload: DailyReviewPayload
@@ -176,6 +201,51 @@ class ListTasksCommand(ApiModel):
     payload: ListTasksPayload = Field(default_factory=ListTasksPayload)
 
 
+class SchedulerStatusCommand(ApiModel):
+    type: Literal["scheduler_status"]
+    payload: SchedulerAtPayload = Field(default_factory=SchedulerAtPayload)
+
+
+class SchedulerDueCommand(ApiModel):
+    type: Literal["scheduler_due"]
+    payload: SchedulerAtPayload = Field(default_factory=SchedulerAtPayload)
+
+
+class SchedulerRunDueCommand(ApiModel):
+    type: Literal["scheduler_run_due"]
+    payload: SchedulerAtPayload = Field(default_factory=SchedulerAtPayload)
+
+
+class SchedulerRunJobCommand(ApiModel):
+    type: Literal["scheduler_run_job"]
+    payload: SchedulerRunJobPayload
+
+
+class SchedulerHistoryCommand(ApiModel):
+    type: Literal["scheduler_history"]
+    payload: SchedulerHistoryPayload = Field(default_factory=SchedulerHistoryPayload)
+
+
+class RunNightlyFlowCommand(ApiModel):
+    type: Literal["run_nightly_flow"]
+    payload: FlowDatePayload = Field(default_factory=FlowDatePayload)
+
+
+class RunMorningFlowCommand(ApiModel):
+    type: Literal["run_morning_flow"]
+    payload: FlowDatePayload = Field(default_factory=FlowDatePayload)
+
+
+class RunWeeklyFlowCommand(ApiModel):
+    type: Literal["run_weekly_flow"]
+    payload: FlowDatePayload = Field(default_factory=FlowDatePayload)
+
+
+class RunMonthlyFlowCommand(ApiModel):
+    type: Literal["run_monthly_flow"]
+    payload: FlowMonthPayload = Field(default_factory=FlowMonthPayload)
+
+
 Command = Annotated[
     CreateDailyReviewCommand
     | CreateTaskCommand
@@ -186,7 +256,16 @@ Command = Annotated[
     | ApproveInstructionCommand
     | ReviseInstructionCommand
     | GetInstructionCommand
-    | ListTasksCommand,
+    | ListTasksCommand
+    | SchedulerStatusCommand
+    | SchedulerDueCommand
+    | SchedulerRunDueCommand
+    | SchedulerRunJobCommand
+    | SchedulerHistoryCommand
+    | RunNightlyFlowCommand
+    | RunMorningFlowCommand
+    | RunWeeklyFlowCommand
+    | RunMonthlyFlowCommand,
     Field(discriminator="type"),
 ]
 
@@ -295,7 +374,22 @@ COMMAND_MODELS = {
     "revise_instruction": ReviseInstructionCommand,
     "get_instruction": GetInstructionCommand,
     "list_tasks": ListTasksCommand,
+    "scheduler_status": SchedulerStatusCommand,
+    "scheduler_due": SchedulerDueCommand,
+    "scheduler_run_due": SchedulerRunDueCommand,
+    "scheduler_run_job": SchedulerRunJobCommand,
+    "scheduler_history": SchedulerHistoryCommand,
+    "run_nightly_flow": RunNightlyFlowCommand,
+    "run_morning_flow": RunMorningFlowCommand,
+    "run_weekly_flow": RunWeeklyFlowCommand,
+    "run_monthly_flow": RunMonthlyFlowCommand,
 }
 
 
-WRITE_COMMANDS = set(COMMAND_MODELS) - {"get_instruction", "list_tasks"}
+WRITE_COMMANDS = set(COMMAND_MODELS) - {
+    "get_instruction",
+    "list_tasks",
+    "scheduler_status",
+    "scheduler_due",
+    "scheduler_history",
+}

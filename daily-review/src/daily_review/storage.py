@@ -53,6 +53,10 @@ DATA_DIRS = [
     Path("data/repairs/idempotency"),
     Path("data/notifications"),
     Path("data/notifications/events"),
+    Path("data/scheduler"),
+    Path("data/scheduler/audit"),
+    Path("data/scheduler/idempotency"),
+    Path("data/scheduler/locks"),
     Path("logs"),
     Path("templates"),
 ]

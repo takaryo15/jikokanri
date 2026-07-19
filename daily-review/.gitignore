@@ -10,6 +10,7 @@ config/priorities.json
 config/notifications.json
 config/api.json
 config/recovery.json
+config/scheduler.json
 exports/
 *.zip
 .venv-release-test/

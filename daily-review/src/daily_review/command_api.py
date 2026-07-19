@@ -134,7 +134,13 @@ def _confirmation_path(root: Path, token: str) -> Path:
 def _state_hash(root: Path) -> str:
     files: list[tuple[str, str]] = []
     candidates = [root / "data" / "api" / "tasks.json"]
-    for directory in (root / "data" / "daily", root / "data" / "plans" / "daily"):
+    for directory in (
+        root / "data" / "daily",
+        root / "data" / "plans" / "daily",
+        root / "data" / "weekly",
+        root / "data" / "monthly",
+        root / "data" / "scheduler",
+    ):
         if directory.is_dir():
             candidates.extend(sorted(directory.glob("*.json")))
     for path in sorted(set(candidates)):
@@ -285,10 +291,11 @@ class ExecutionPlan:
     warnings: list[ApiIssue] = field(default_factory=list)
     errors: list[ApiIssue] = field(default_factory=list)
     entity_ids: list[str] = field(default_factory=list)
+    external_actions: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def has_writes(self) -> bool:
-        return bool(self.state.writes())
+        return bool(self.state.writes() or self.external_actions)
 
 
 def _resolve_references(value: Any, previous: list[dict[str, Any]]) -> Any:
@@ -912,7 +919,112 @@ def _handle_command(
             }
         )
         return {"instruction_id": payload["instruction_id"], "instruction": instruction}
+    if kind.startswith("scheduler_") or kind.startswith("run_") and kind.endswith(
+        "_flow"
+    ):
+        from .operational_flows import run_operational_flow
+        from .scheduler import (
+            due_jobs,
+            parse_scheduler_at,
+            run_due_jobs,
+            run_scheduled_job,
+            scheduler_history,
+            scheduler_status,
+        )
+
+        at = (
+            parse_scheduler_at(payload.get("at"), request.timezone)
+            if payload.get("at")
+            else state.now.astimezone(ZoneInfo(request.timezone))
+        )
+        if kind == "scheduler_status":
+            return scheduler_status(state.root, at)
+        if kind == "scheduler_due":
+            return due_jobs(state.root, at)
+        if kind == "scheduler_history":
+            return {
+                "records": scheduler_history(
+                    state.root,
+                    job_id=payload.get("job"),
+                    status=payload.get("status"),
+                    day=payload.get("date"),
+                )
+            }
+        if kind == "scheduler_run_due":
+            preview = run_due_jobs(state.root, at, dry_run=True, source="command_api")
+            action = {"kind": kind, "index": index, "payload": payload, "at": at.isoformat()}
+        elif kind == "scheduler_run_job":
+            preview = run_scheduled_job(
+                state.root,
+                payload["job"],
+                current=at,
+                dry_run=True,
+                force=payload.get("force", False),
+                source="command_api",
+            )
+            action = {"kind": kind, "index": index, "payload": payload, "at": at.isoformat()}
+        else:
+            flow = kind.removeprefix("run_").removesuffix("_flow")
+            preview = run_operational_flow(
+                state.root,
+                flow,
+                day=payload.get("date"),
+                month=payload.get("month"),
+                current=at,
+                dry_run=True,
+                force=payload.get("force", False),
+                source="command_api",
+            )
+            action = {
+                "kind": kind,
+                "flow": flow,
+                "index": index,
+                "payload": payload,
+                "at": at.isoformat(),
+            }
+        plan.external_actions.append(action)
+        plan.changes.append(
+            {
+                "command_index": index,
+                "type": kind,
+                "action": "execute_after_confirmation",
+                "preview": preview,
+            }
+        )
+        return preview
     raise CommandProblem("UNKNOWN_COMMAND", f"未対応のcommandです: {kind}")
+
+
+def _execute_external_actions(
+    root: Path, plan: ExecutionPlan
+) -> None:
+    from .operational_flows import run_operational_flow
+    from .scheduler import run_due_jobs, run_scheduled_job
+
+    for action in plan.external_actions:
+        current = datetime.fromisoformat(action["at"])
+        payload = action["payload"]
+        if action["kind"] == "scheduler_run_due":
+            result = run_due_jobs(root, current, source="command_api")
+        elif action["kind"] == "scheduler_run_job":
+            result = run_scheduled_job(
+                root,
+                payload["job"],
+                current=current,
+                force=payload.get("force", False),
+                source="command_api",
+            )
+        else:
+            result = run_operational_flow(
+                root,
+                action["flow"],
+                day=payload.get("date"),
+                month=payload.get("month"),
+                current=current,
+                force=payload.get("force", False),
+                source="command_api",
+            )
+        plan.command_results[action["index"]]["result"] = result
 
 
 def _build_plan(
@@ -948,6 +1060,17 @@ def _build_plan(
             )
             if request.execution_policy == "atomic":
                 break
+    if plan.external_actions and (
+        len(request.commands) != 1 or bool(plan.state.writes())
+    ):
+        plan.errors.append(
+            ApiIssue(
+                code="INVALID_REQUEST",
+                message="schedulerまたはflowの実行commandは安全のため1件だけ指定してください",
+                field="commands",
+                recoverable=True,
+            )
+        )
     return plan
 
 
@@ -1372,6 +1495,26 @@ class CommandExecutor:
         else:
             confirmation = None
             confirmation_path = None
+
+        try:
+            _execute_external_actions(self.root, plan)
+        except (OSError, ValueError) as exc:
+            issue = ApiIssue(
+                code="SCHEDULER_ERROR",
+                message=str(exc),
+                recoverable=True,
+            )
+            response = self._response(
+                request,
+                status="error",
+                summary="schedulerまたはflowの実行に失敗しました",
+                errors=[issue],
+                result={"commands": plan.command_results},
+            )
+            self._save_audit(
+                request, operation_hash, response, current, request.confirmation_token
+            )
+            return response
 
         status = "partial_success" if plan.errors else "committed"
         response = self._response(

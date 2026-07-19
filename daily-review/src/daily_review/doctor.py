@@ -14,6 +14,11 @@ from .evaluation import EvaluationError, validate_evaluation
 from .replan import ReplanError, validate_replan
 from .goal_design import GoalDesignError, load_design
 from .notifications import NotificationError, load_history as load_notification_history, load_notification_config
+from .scheduler import (
+    SchedulerError,
+    load_scheduler_config,
+    load_scheduler_history,
+)
 from .command_api import CommandApiError, load_api_config, load_audit_history
 from .session import SESSION_STATUSES
 from .storage import (
@@ -79,6 +84,7 @@ def run_doctor(root: Path) -> dict[str, Any]:
                 ("data", "rollover"),
                 ("data", "repairs"),
                 ("data", "notifications"),
+                ("data", "scheduler"),
             }:
                 issues.append(_issue("WARN", f"{relative} がありません。対応コマンドの初回実行時に自動作成されます"))
             else:
@@ -439,6 +445,14 @@ def run_doctor(root: Path) -> dict[str, Any]:
         checks.append("notification config and history")
 
     try:
+        load_scheduler_config(root)
+        load_scheduler_history(root)
+    except (SchedulerError, OSError, ValueError) as exc:
+        issues.append(_issue("ERROR", f"scheduler設定または履歴が不正です: {exc}"))
+    else:
+        checks.append("scheduler config and history")
+
+    try:
         load_api_config(root)
         load_audit_history(root)
     except (CommandApiError, OSError, ValueError) as exc:
@@ -455,6 +469,7 @@ def run_doctor(root: Path) -> dict[str, Any]:
             "config/priorities.json",
             "config/notifications.json",
             "config/api.json",
+            "config/scheduler.json",
             "exports/",
         )
         if all(value in gitignore for value in ignored_runtime_paths):
