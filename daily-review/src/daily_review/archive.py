@@ -23,7 +23,7 @@ from .storage import atomic_write_json_data, read_json_file
 ARCHIVE_ROOTS = ("data", "logs", "templates", "config")
 MANIFEST_NAME = "manifest.json"
 FORMAT_VERSION = 1
-MAX_FILES = 10_000
+MAX_FILES = 50_000
 MAX_TOTAL_SIZE = 100 * 1024 * 1024
 MAX_SINGLE_FILE = 25 * 1024 * 1024
 MAX_COMPRESSION_RATIO = 200
@@ -60,7 +60,7 @@ def backup_sha256(path: Path) -> str:
 
 
 def load_backup_config(root: Path) -> dict[str, Any]:
-    result = dict(DEFAULT_BACKUP_CONFIG)
+    result: dict[str, Any] = dict(DEFAULT_BACKUP_CONFIG)
     path = root / "config" / "recovery.json"
     if path.exists():
         try:

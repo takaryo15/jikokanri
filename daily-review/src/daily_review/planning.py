@@ -4,6 +4,7 @@ Plans are deliberately separate from the existing daily and weekly review
 documents.  They only contain references to goals, so older review files stay
 valid and a plan can always be reviewed before it is used.
 """
+
 from __future__ import annotations
 
 import shutil
@@ -13,7 +14,14 @@ from pathlib import Path
 from typing import Any
 
 from .date_utils import parse_date, week_range_for
-from .goals import GoalError, find_milestone, find_step, load_goal, load_goals, milestones_of, next_goal_action
+from .goals import (
+    GoalError,
+    find_milestone,
+    find_step,
+    load_goal,
+    load_goals,
+    milestones_of,
+)
 from .models import now_iso
 from .storage import atomic_write_json_data, read_json_file
 
@@ -61,7 +69,10 @@ def _new_id(prefix: str) -> str:
 def _backup(path: Path, root: Path) -> None:
     if not path.exists():
         return
-    target = plans_backup_dir(root) / f"{path.stem}_{now_iso().replace(':', '').replace('+', '_')}.json"
+    target = (
+        plans_backup_dir(root)
+        / f"{path.stem}_{now_iso().replace(':', '').replace('+', '_')}.json"
+    )
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(path, target)
 
@@ -105,7 +116,11 @@ def _validate_ref(root: Path, item: dict[str, Any]) -> None:
 
 
 def _validate_item(item: Any, *, daily: bool = False) -> None:
-    if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item["id"]:
+    if (
+        not isinstance(item, dict)
+        or not isinstance(item.get("id"), str)
+        or not item["id"]
+    ):
         raise PlanningError("計画項目IDが不正です")
     if not isinstance(item.get("title"), str) or not item["title"].strip():
         raise PlanningError("計画項目titleが不正です")
@@ -116,7 +131,14 @@ def _validate_item(item: Any, *, daily: bool = False) -> None:
             parse_date(item["due_date"])
         except (TypeError, ValueError) as exc:
             raise PlanningError("計画項目due_dateが不正です") from exc
-    if daily and item.get("estimated_minutes") is not None and (not isinstance(item["estimated_minutes"], int) or item["estimated_minutes"] < 0):
+    if (
+        daily
+        and item.get("estimated_minutes") is not None
+        and (
+            not isinstance(item["estimated_minutes"], int)
+            or item["estimated_minutes"] < 0
+        )
+    ):
         raise PlanningError("estimated_minutesが不正です")
 
 
@@ -124,7 +146,11 @@ def validate_weekly_plan(value: Any, *, week_start: str | None = None) -> None:
     if not isinstance(value, dict):
         raise PlanningError("週次計画JSONの形式が不正です")
     start, end = week_range_for(value.get("week_start", ""))
-    if value.get("week_start") != start or value.get("week_end") != end or (week_start and start != week_range_for(week_start)[0]):
+    if (
+        value.get("week_start") != start
+        or value.get("week_end") != end
+        or (week_start and start != week_range_for(week_start)[0])
+    ):
         raise PlanningError("週次計画の週境界が不正です")
     if value.get("status") not in WEEKLY_PLAN_STATUSES:
         raise PlanningError("週次計画statusが不正です")
@@ -161,7 +187,11 @@ def validate_daily_plan(value: Any, *, day: str | None = None) -> None:
         raise PlanningError("goal_linksの形式が不正です")
     seen = set()
     for link in links:
-        if not isinstance(link, dict) or link.get("record_type") not in {"main", "task"} or not isinstance(link.get("record_index"), int):
+        if (
+            not isinstance(link, dict)
+            or link.get("record_type") not in {"main", "task"}
+            or not isinstance(link.get("record_index"), int)
+        ):
             raise PlanningError("goal linkの形式が不正です")
         key = (link["record_type"], link["record_index"])
         if key in seen:
@@ -169,25 +199,56 @@ def validate_daily_plan(value: Any, *, day: str | None = None) -> None:
         seen.add(key)
 
 
-def _candidate(goal: dict[str, Any], milestone: dict[str, Any], step: dict[str, Any] | None, *, reason: str) -> dict[str, Any]:
+def _candidate(
+    goal: dict[str, Any],
+    milestone: dict[str, Any],
+    step: dict[str, Any] | None,
+    *,
+    reason: str,
+) -> dict[str, Any]:
     source_type = "goal_step" if step else "milestone"
     item = step or milestone
     return {
-        "id": _new_id("focus"), "title": item["title"], "category": goal.get("category") or goal["title"],
-        "source_type": source_type, "goal_id": goal["id"], "milestone_id": milestone["id"],
-        "step_id": step.get("id") if step else None, "due_date": item.get("due_date") or milestone.get("due_date"),
-        "reason": reason, "minimum": step.get("minimum") if step else None, "status": item.get("status"),
+        "id": _new_id("focus"),
+        "title": item["title"],
+        "category": goal.get("category") or goal["title"],
+        "source_type": source_type,
+        "goal_id": goal["id"],
+        "milestone_id": milestone["id"],
+        "step_id": step.get("id") if step else None,
+        "due_date": item.get("due_date") or milestone.get("due_date"),
+        "reason": reason,
+        "minimum": step.get("minimum") if step else None,
+        "status": item.get("status"),
     }
 
 
-def _eligible_actions(goal: dict[str, Any]) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
-    completed = {item.get("id") for item in milestones_of(goal) if item.get("status") == "completed"}
+def _eligible_actions(
+    goal: dict[str, Any],
+) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    completed = {
+        item.get("id")
+        for item in milestones_of(goal)
+        if item.get("status") == "completed"
+    }
     result: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
     for milestone in milestones_of(goal):
-        if milestone.get("status") not in {"planned", "active"} or not set(milestone.get("dependencies") or []) <= completed:
+        if (
+            milestone.get("status") not in {"planned", "active"}
+            or not set(milestone.get("dependencies") or []) <= completed
+        ):
             continue
-        done = {step.get("id") for step in milestone.get("steps") or [] if step.get("status") == "done"}
-        candidates = [step for step in milestone.get("steps") or [] if step.get("status") in {"todo", "doing"} and set(step.get("dependencies") or []) <= done]
+        done = {
+            step.get("id")
+            for step in milestone.get("steps") or []
+            if step.get("status") == "done"
+        }
+        candidates = [
+            step
+            for step in milestone.get("steps") or []
+            if step.get("status") in {"todo", "doing"}
+            and set(step.get("dependencies") or []) <= done
+        ]
         if candidates:
             result.extend((milestone, step) for step in candidates)
         elif not milestone.get("steps"):
@@ -207,9 +268,30 @@ def generate_weekly_plan(root: Path, day: str, priorities: list[str]) -> dict[st
             overdue = due < start
             this_week = start <= due <= end
             doing = item.get("status") == "doing"
-            reason = "期限超過" if overdue else "今週期限" if this_week else "進行中のステップ" if doing else "目標の次アクション"
-            category_rank = priorities.index(goal.get("category")) if goal.get("category") in priorities else len(priorities)
-            score = (category_rank, 0 if overdue else 1, 0 if this_week else 1, 0 if doing else 1, 0 if milestone.get("status") == "active" else 1, due, milestone.get("order", 0), (step or {}).get("order", 0))
+            reason = (
+                "期限超過"
+                if overdue
+                else "今週期限"
+                if this_week
+                else "進行中のステップ"
+                if doing
+                else "目標の次アクション"
+            )
+            category_rank = (
+                priorities.index(goal.get("category"))
+                if goal.get("category") in priorities
+                else len(priorities)
+            )
+            score = (
+                category_rank,
+                0 if overdue else 1,
+                0 if this_week else 1,
+                0 if doing else 1,
+                0 if milestone.get("status") == "active" else 1,
+                due,
+                milestone.get("order", 0),
+                (step or {}).get("order", 0),
+            )
             scored.append((score, _candidate(goal, milestone, step, reason=reason)))
     scored.sort(key=lambda item: item[0])
     unique: list[dict[str, Any]] = []
@@ -217,7 +299,8 @@ def generate_weekly_plan(root: Path, day: str, priorities: list[str]) -> dict[st
     for _, item in scored:
         key = (item["goal_id"], item["milestone_id"], item.get("step_id"))
         if key not in seen:
-            seen.add(key); unique.append(item)
+            seen.add(key)
+            unique.append(item)
     carryovers: list[dict[str, Any]] = []
     previous_start = (parse_date(start) - timedelta(days=7)).isoformat()
     try:
@@ -229,13 +312,30 @@ def generate_weekly_plan(root: Path, day: str, priorities: list[str]) -> dict[st
             try:
                 goal = load_goal(root, item["goal_id"])
                 milestone = find_milestone(goal, item["milestone_id"])
-                subject = find_step(goal, item["milestone_id"], item["step_id"])[1] if item.get("step_id") else milestone
-                if subject.get("status") not in {"done", "completed", "cancelled"} and (not subject.get("due_date") or subject["due_date"] >= start):
+                subject = (
+                    find_step(goal, item["milestone_id"], item["step_id"])[1]
+                    if item.get("step_id")
+                    else milestone
+                )
+                if subject.get("status") not in {"done", "completed", "cancelled"} and (
+                    not subject.get("due_date") or subject["due_date"] >= start
+                ):
                     carryovers.append(dict(item))
             except (GoalError, KeyError):
                 continue
     timestamp = now_iso()
-    return {"week_start": start, "week_end": end, "status": "draft", "focus_items": unique[:MAX_FOCUS_ITEMS], "other_candidates": unique[MAX_FOCUS_ITEMS:], "carryovers": carryovers, "created_at": timestamp, "updated_at": timestamp, "approved_at": None, "revision": 1}
+    return {
+        "week_start": start,
+        "week_end": end,
+        "status": "draft",
+        "focus_items": unique[:MAX_FOCUS_ITEMS],
+        "other_candidates": unique[MAX_FOCUS_ITEMS:],
+        "carryovers": carryovers,
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "approved_at": None,
+        "revision": 1,
+    }
 
 
 def save_weekly_plan(root: Path, plan: dict[str, Any]) -> Path:
@@ -273,7 +373,15 @@ def generate_daily_plan(root: Path, day: str, priorities: list[str]) -> dict[str
     weekly = load_weekly_plan(root, week_start)
     candidates: list[dict[str, Any]] = []
     if weekly and weekly.get("status") == "approved":
-        candidates.extend(dict(item, id=_new_id("daily-plan"), weekly_focus_id=item["id"], reason="承認済み週次重点") for item in weekly.get("focus_items") or [])
+        candidates.extend(
+            dict(
+                item,
+                id=_new_id("daily-plan"),
+                weekly_focus_id=item["id"],
+                reason="承認済み週次重点",
+            )
+            for item in weekly.get("focus_items") or []
+        )
     generated = generate_weekly_plan(root, day, priorities)
     for item in generated["focus_items"] + generated["other_candidates"]:
         item = dict(item, id=_new_id("daily-plan"), weekly_focus_id=None)
@@ -283,33 +391,60 @@ def generate_daily_plan(root: Path, day: str, priorities: list[str]) -> dict[str
     for item in candidates:
         key = (item["goal_id"], item["milestone_id"], item.get("step_id"))
         if key not in seen:
-            seen.add(key); unique.append(item)
+            seen.add(key)
+            unique.append(item)
     main_limit = MAX_MAIN_CANDIDATES
     planning_config = root / "config" / "planning.json"
     if planning_config.exists():
         config = read_json_file(planning_config)
         configured = config.get("max_daily_main") if isinstance(config, dict) else None
-        if not isinstance(configured, int) or isinstance(configured, bool) or not 1 <= configured <= MAX_MAIN_CANDIDATES:
-            raise PlanningError("config/planning.jsonのmax_daily_mainは1〜3にしてください")
+        if (
+            not isinstance(configured, int)
+            or isinstance(configured, bool)
+            or not 1 <= configured <= MAX_MAIN_CANDIDATES
+        ):
+            raise PlanningError(
+                "config/planning.jsonのmax_daily_mainは1〜3にしてください"
+            )
         main_limit = configured
     timestamp = now_iso()
     main, other = unique[:main_limit], unique[main_limit:]
-    return {"date": day, "status": "draft", "main_candidates": main, "other_tasks": other, "minimum_candidates": [item["minimum"] for item in main if item.get("minimum")], "goal_links": [], "created_at": timestamp, "updated_at": timestamp, "approved_at": None, "revision": 1}
+    return {
+        "date": day,
+        "status": "draft",
+        "main_candidates": main,
+        "other_tasks": other,
+        "minimum_candidates": [item["minimum"] for item in main if item.get("minimum")],
+        "goal_links": [],
+        "created_at": timestamp,
+        "updated_at": timestamp,
+        "approved_at": None,
+        "revision": 1,
+    }
 
 
-def approve_plan(root: Path, *, week: str | None = None, day: str | None = None) -> dict[str, Any]:
+def approve_plan(
+    root: Path, *, week: str | None = None, day: str | None = None
+) -> dict[str, Any]:
     if (week is None) == (day is None):
         raise PlanningError("--week または --date のどちらか一方を指定してください")
     if week:
         plan = load_weekly_plan(root, week)
-        if not plan: raise PlanningError("週次計画が見つかりません")
-        path = weekly_plan_path(root, week); validate_weekly_plan(plan)
+        if not plan:
+            raise PlanningError("週次計画が見つかりません")
+        path = weekly_plan_path(root, week)
+        validate_weekly_plan(plan)
     else:
         plan = load_daily_plan(root, day or "")
-        if not plan: raise PlanningError("日次計画が見つかりません")
-        path = daily_plan_path(root, day or ""); validate_daily_plan(plan)
+        if not plan:
+            raise PlanningError("日次計画が見つかりません")
+        path = daily_plan_path(root, day or "")
+        validate_daily_plan(plan)
     _backup(path, root)
-    plan["status"] = "approved"; plan["approved_at"] = now_iso(); plan["updated_at"] = now_iso(); plan["revision"] = int(plan.get("revision", 1)) + 1
+    plan["status"] = "approved"
+    plan["approved_at"] = now_iso()
+    plan["updated_at"] = now_iso()
+    plan["revision"] = int(plan.get("revision", 1)) + 1
     atomic_write_json_data(path, plan)
     return plan
 
@@ -318,7 +453,8 @@ def update_daily_plan(root: Path, plan: dict[str, Any]) -> None:
     validate_daily_plan(plan)
     path = daily_plan_path(root, plan["date"])
     _backup(path, root)
-    plan["updated_at"] = now_iso(); plan["revision"] = int(plan.get("revision", 1)) + 1
+    plan["updated_at"] = now_iso()
+    plan["revision"] = int(plan.get("revision", 1)) + 1
     atomic_write_json_data(path, plan)
 
 
@@ -326,14 +462,22 @@ def update_weekly_plan(root: Path, plan: dict[str, Any]) -> None:
     validate_weekly_plan(plan)
     path = weekly_plan_path(root, plan["week_start"])
     _backup(path, root)
-    plan["updated_at"] = now_iso(); plan["revision"] = int(plan.get("revision", 1)) + 1
+    plan["updated_at"] = now_iso()
+    plan["revision"] = int(plan.get("revision", 1)) + 1
     atomic_write_json_data(path, plan)
 
 
 def apply_step_updates(root: Path, updates: list[tuple[str, str, str, str]]) -> None:
     """Validate every requested status update before writing any goal file."""
     from .goals import update_step
+
     for goal_id, milestone_id, step_id, _ in updates:
         find_step(load_goal(root, goal_id), milestone_id, step_id)
     for goal_id, milestone_id, step_id, status in updates:
-        update_step(root, goal_id, milestone_id, step_id, {"status": status, "completed_at": now_iso() if status == "done" else None})
+        update_step(
+            root,
+            goal_id,
+            milestone_id,
+            step_id,
+            {"status": status, "completed_at": now_iso() if status == "done" else None},
+        )

@@ -33,7 +33,7 @@ from .storage import atomic_write_json_data, read_json_file
 
 SCHEDULER_VERSION = "1"
 HISTORY_LIMIT = 10_000
-VALID_MISSED_POLICIES = {"skip", "run_once", "run_all", "notify_only"}
+VALID_MISSED_POLICIES = {"skip", "run_once", "notify_only"}
 RETRYABLE_CODES = {
     "LOCKED",
     "IO_ERROR",
@@ -1090,6 +1090,8 @@ def run_due_jobs(
 
 
 def scheduler_status(root: Path, current: datetime) -> dict[str, Any]:
+    from .scheduler_install import resolve_cli_executable
+
     from .scheduler_install import install_status
 
     config = load_scheduler_config(root)
@@ -1126,7 +1128,7 @@ def scheduler_status(root: Path, current: datetime) -> dict[str, Any]:
         "launchd": install_status(root),
         "config_path": str(scheduler_config_path(root)),
         "data_path": str(root / "data/scheduler"),
-        "executable_path": shutil.which("daily-review"),
+        "executable_path": resolve_cli_executable(),
         "python_path": os.path.realpath(os.sys.executable),
     }
 
@@ -1164,6 +1166,8 @@ def _next_job(root: Path, current: datetime) -> dict[str, Any] | None:
 def scheduler_doctor(
     root: Path, current: datetime, *, repair: bool = False, dry_run: bool = False
 ) -> dict[str, Any]:
+    from .scheduler_install import resolve_cli_executable
+
     from .scheduler_install import install_status
 
     issues: list[dict[str, Any]] = []
@@ -1182,7 +1186,10 @@ def scheduler_doctor(
             ],
             "repairs": [],
         }
-    executable = shutil.which("daily-review")
+    try:
+        executable = resolve_cli_executable()
+    except ValueError:
+        executable = None
     if not config["enabled"]:
         issues.append(
             _scheduler_issue("SCHEDULER_DISABLED", "warning", "schedulerが無効です")

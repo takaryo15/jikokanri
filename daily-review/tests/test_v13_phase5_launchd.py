@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from daily_review.scheduler_install import (
@@ -8,6 +9,7 @@ from daily_review.scheduler_install import (
     expected_plist,
     install_scheduler,
     plist_path,
+    resolve_cli_executable,
     uninstall_scheduler,
 )
 
@@ -63,3 +65,30 @@ def test_cron_backend_only_returns_example(tmp_path):
     assert cron_example(
         tmp_path, executable="/path with space/daily-review"
     ).startswith("*/15")
+
+
+def test_executable_prefers_active_python_environment(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python"
+    command = bin_dir / "daily-review"
+    python.touch()
+    command.touch()
+    monkeypatch.setattr(sys, "executable", str(python))
+
+    assert resolve_cli_executable() == str(command.resolve())
+
+
+def test_executable_keeps_virtualenv_when_python_is_symlink(tmp_path, monkeypatch):
+    base = tmp_path / "base" / "python"
+    base.parent.mkdir()
+    base.touch()
+    bin_dir = tmp_path / "venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    python = bin_dir / "python"
+    python.symlink_to(base)
+    command = bin_dir / "daily-review"
+    command.touch()
+    monkeypatch.setattr(sys, "executable", str(python))
+
+    assert resolve_cli_executable() == str(command.resolve())

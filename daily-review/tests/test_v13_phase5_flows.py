@@ -125,3 +125,56 @@ def test_nightly_never_approves_or_applies_rollover(tmp_path):
         (tmp_path / "data/daily/2026-07-20.json").read_text(encoding="utf-8")
     )
     assert "tomorrow_plan_final" not in value
+
+
+def test_unwell_nightly_flow_suggests_smaller_minimum_without_applying(tmp_path):
+    _daily(tmp_path, "2026-07-19")
+    path = tmp_path / "data/daily/2026-07-19.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["structured_review"] = {"breakdown_causes": ["体調不良と眠気"]}
+    path.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
+    previous = tmp_path / "data/daily/2026-07-18.json"
+    previous.write_text(
+        json.dumps(
+            {
+                "date": "2026-07-18",
+                "tomorrow_plan_final": {
+                    "status": "approved",
+                    "target_date": "2026-07-19",
+                    "main": ["休養"],
+                    "tasks": [
+                        {
+                            "id": "rest",
+                            "area": "休養",
+                            "task": "休む",
+                            "minimum_line": "水を飲む",
+                        }
+                    ],
+                },
+                "task_results": [
+                    {
+                        "task_id": "rest",
+                        "status": "minimum_only",
+                        "minimum_line_achieved": True,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+
+    result = run_operational_flow(
+        tmp_path,
+        "nightly",
+        day="2026-07-19",
+        current=datetime(2026, 7, 19, 22, 30, tzinfo=ZONE),
+        dry_run=True,
+    )
+
+    suggestion = result["details"]["minimum_adjustment"]
+    assert suggestion["recommended"] is True
+    assert suggestion["automatic_change"] is False
+    assert "縮小" in suggestion["proposal"]
+    assert path.read_bytes() == before

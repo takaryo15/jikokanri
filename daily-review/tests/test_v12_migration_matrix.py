@@ -20,17 +20,26 @@ def test_v10_v11_and_partial_workspaces_migrate_without_rewriting_data(tmp_path)
         root = tmp_path / name
         (root / "data/daily").mkdir(parents=True)
         daily = root / "data/daily/2026-07-14.json"
-        daily.write_text(json.dumps({"date": "2026-07-14", "unknown": {"keep": True}}, ensure_ascii=False), encoding="utf-8")
+        daily.write_text(
+            json.dumps(
+                {"date": "2026-07-14", "unknown": {"keep": True}}, ensure_ascii=False
+            ),
+            encoding="utf-8",
+        )
         if name == "v11":
             (root / "data/inbox").mkdir()
-            (root / "data/inbox/2026-07-14.json").write_text('{"date":"2026-07-14","entries":[]}', encoding="utf-8")
+            (root / "data/inbox/2026-07-14.json").write_text(
+                '{"date":"2026-07-14","entries":[]}', encoding="utf-8"
+            )
         before = digest(daily)
         assert runner.invoke(app, ["init", "--root", str(root)]).exit_code == 0
         first = runner.invoke(app, ["migrate", "--yes", "--root", str(root)])
         second = runner.invoke(app, ["migrate", "--yes", "--root", str(root)])
         assert first.exit_code == second.exit_code == 0
         assert digest(daily) == before
-        history = json.loads((root / "data/migrations.json").read_text(encoding="utf-8"))["migrations"]
+        history = json.loads(
+            (root / "data/migrations.json").read_text(encoding="utf-8")
+        )["migrations"]
         ids = [item["id"] for item in history]
         assert len(ids) == len(set(ids)) and "v1.2-final" in ids
 

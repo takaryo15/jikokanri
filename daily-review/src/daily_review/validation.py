@@ -8,7 +8,13 @@ from .date_utils import tomorrow_of
 
 MAX_MAIN_ITEMS = 3
 NORMAL_TASK_WARNING_THRESHOLD = 6
-ALLOWED_TASK_RESULT_STATUSES = {"completed", "partial", "minimum_only", "not_started", "skipped"}
+ALLOWED_TASK_RESULT_STATUSES = {
+    "completed",
+    "partial",
+    "minimum_only",
+    "not_started",
+    "skipped",
+}
 
 
 @dataclass
@@ -57,29 +63,45 @@ def validate_task_results(entry: dict[str, Any]) -> ValidationResult:
         task_id = item.get("task_id")
         seen_result_ids.append(task_id)
         if task_id not in task_id_set:
-            result.errors.append(f"実行結果: task_idが確定版に存在しません（{task_id}）")
+            result.errors.append(
+                f"実行結果: task_idが確定版に存在しません（{task_id}）"
+            )
         status = item.get("status")
         if status not in ALLOWED_TASK_RESULT_STATUSES:
             result.errors.append(f"実行結果: statusが不正です（{status}）")
         if not isinstance(item.get("minimum_line_achieved"), bool):
-            result.errors.append(f"実行結果: minimum_line_achievedはtrue/falseにしてください（{task_id}）")
+            result.errors.append(
+                f"実行結果: minimum_line_achievedはtrue/falseにしてください（{task_id}）"
+            )
         achieved = item.get("minimum_line_achieved")
         if status == "completed" and achieved is False:
-            result.warnings.append(f"実行結果: {task_id} は完了ですが最低ライン未達です")
+            result.warnings.append(
+                f"実行結果: {task_id} は完了ですが最低ライン未達です"
+            )
         if status == "minimum_only" and achieved is False:
-            result.warnings.append(f"実行結果: {task_id} は最低ラインのみですが最低ライン未達です")
+            result.warnings.append(
+                f"実行結果: {task_id} は最低ラインのみですが最低ライン未達です"
+            )
         if status == "not_started" and achieved is True:
-            result.warnings.append(f"実行結果: {task_id} は未着手ですが最低ライン達成です")
-    duplicated = sorted({task_id for task_id in seen_result_ids if seen_result_ids.count(task_id) > 1})
+            result.warnings.append(
+                f"実行結果: {task_id} は未着手ですが最低ライン達成です"
+            )
+    duplicated = sorted(
+        {task_id for task_id in seen_result_ids if seen_result_ids.count(task_id) > 1}
+    )
     if duplicated:
-        result.errors.append(f"実行結果: task_idが重複しています（{', '.join(duplicated)}）")
+        result.errors.append(
+            f"実行結果: task_idが重複しています（{', '.join(duplicated)}）"
+        )
     missing = [task_id for task_id in task_ids if task_id not in seen_result_ids]
     if missing:
         result.warnings.append(f"実行結果: 未記録タスクがあります（{len(missing)}件）")
     return result
 
 
-def validate_plan(plan: dict[str, Any], source_date: str, final: bool = False) -> ValidationResult:
+def validate_plan(
+    plan: dict[str, Any], source_date: str, final: bool = False
+) -> ValidationResult:
     result = ValidationResult()
     label = "確定版" if final else "提案版"
     main = plan.get("main") or []
@@ -88,12 +110,19 @@ def validate_plan(plan: dict[str, Any], source_date: str, final: bool = False) -
     if len(main) <= MAX_MAIN_ITEMS:
         result.ok.append(f"{label}: Mainは{MAX_MAIN_ITEMS}件以内です")
     else:
-        result.errors.append(f"{label}: Mainは最大{MAX_MAIN_ITEMS}つです（現在{len(main)}つ）")
+        result.errors.append(
+            f"{label}: Mainは最大{MAX_MAIN_ITEMS}つです（現在{len(main)}つ）"
+        )
 
-    if isinstance(plan.get("one_change_tomorrow"), str) and plan["one_change_tomorrow"].strip():
+    if (
+        isinstance(plan.get("one_change_tomorrow"), str)
+        and plan["one_change_tomorrow"].strip()
+    ):
         result.ok.append(f"{label}: 明日変えることが1つの文字列で保存されています")
     else:
-        result.errors.append(f"{label}: one_change_tomorrowは空でない文字列にしてください")
+        result.errors.append(
+            f"{label}: one_change_tomorrowは空でない文字列にしてください"
+        )
 
     if tasks:
         result.ok.append(f"{label}: タスクがあります")
@@ -117,16 +146,24 @@ def validate_plan(plan: dict[str, Any], source_date: str, final: bool = False) -
         if not isinstance(priority, int) or priority < 1:
             result.errors.append(f"{label}: タスク{index}の優先順位が不正です")
         if task.get("area") not in main_set:
-            result.warnings.append(f"{label}: タスク{index}の分野「{task.get('area')}」がMainに含まれていません")
-    duplicated_ids = sorted({task_id for task_id in task_ids if task_ids.count(task_id) > 1})
+            result.warnings.append(
+                f"{label}: タスク{index}の分野「{task.get('area')}」がMainに含まれていません"
+            )
+    duplicated_ids = sorted(
+        {task_id for task_id in task_ids if task_ids.count(task_id) > 1}
+    )
     if duplicated_ids:
-        result.errors.append(f"{label}: タスクIDが重複しています（{', '.join(duplicated_ids)}）")
+        result.errors.append(
+            f"{label}: タスクIDが重複しています（{', '.join(duplicated_ids)}）"
+        )
 
     expected_target = tomorrow_of(source_date)
     if plan.get("target_date") == expected_target:
         result.ok.append(f"{label}: target_dateは保存元日の翌日です")
     else:
-        result.errors.append(f"{label}: target_dateは{expected_target}にしてください（現在{plan.get('target_date')}）")
+        result.errors.append(
+            f"{label}: target_dateは{expected_target}にしてください（現在{plan.get('target_date')}）"
+        )
 
     if final:
         if plan.get("status") == "approved":

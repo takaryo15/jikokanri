@@ -23,6 +23,7 @@ from .notifications import (
 )
 from .reporting import build_report, weekly_trends
 from .rollover import build_rollover_preview
+from .models import now_iso
 from .storage import (
     atomic_write_text_many,
     monthly_log_path,
@@ -191,6 +192,33 @@ def _nightly(
     draft = _generate_instruction_draft(root, day, current, dry_run=dry_run)
     refreshed = build_daily_summary(root, day) if not dry_run else summary
     integrity = run_integrity_check(root)
+    entry = summary["entry"]
+    review = entry.get("structured_review") or {}
+    quick = entry.get("quick_review") or {}
+    causes = [
+        str(item)
+        for item in (
+            list(review.get("breakdown_causes") or []) + list(quick.get("causes") or [])
+        )
+    ]
+    health_cause = next(
+        (
+            cause
+            for cause in causes
+            if any(word in cause for word in ("体調", "眠気", "病気", "発熱", "疲労"))
+        ),
+        None,
+    )
+    minimum_adjustment = {
+        "recommended": bool(health_cause and refreshed["incomplete_tasks"]),
+        "reason": health_cause,
+        "proposal": (
+            "翌日の最低限を、体調不良時にもできる1手まで縮小してください"
+            if health_cause and refreshed["incomplete_tasks"]
+            else None
+        ),
+        "automatic_change": False,
+    }
     return {
         "review_status": "recorded" if summary["night_review_exists"] else "missing",
         "instruction_draft": draft,
@@ -204,6 +232,7 @@ def _nightly(
         "notifications": _notifications(root, day, current, dry_run=dry_run),
         "rollover": build_rollover_preview(root, tomorrow_of(day)),
         "incomplete_main": refreshed["incomplete_tasks"],
+        "minimum_adjustment": minimum_adjustment,
         "integrity": {
             "status": integrity["status"],
             "counts": integrity["counts"],
@@ -346,6 +375,66 @@ def _source_revision(root: Path, start: str, end: str) -> str:
             digest.update(path.name.encode())
             digest.update(path.read_bytes())
     return digest.hexdigest()
+
+
+def report_source_revision(root: Path, start: str, end: str) -> str:
+    """Public deterministic revision used by report approval and stale checks."""
+    return _source_revision(root, start, end)
+
+
+def approve_report(
+    root: Path,
+    *,
+    period_type: str,
+    target: str,
+    expected_revision: str | None = None,
+) -> dict[str, Any]:
+    """Approve an existing report only when its source data is unchanged."""
+    if period_type == "weekly":
+        start, end = week_range_for(target)
+        path = weekly_path(root, start, end)
+        log_path = weekly_log_path(root, start, end)
+        renderer = render_weekly
+    elif period_type == "monthly":
+        start, end = month_range_for(f"{target[:7]}-01")
+        path = monthly_path(root, target[:7])
+        log_path = monthly_log_path(root, target[:7])
+        renderer = render_monthly
+    else:
+        raise ValueError("period_typeはweeklyまたはmonthlyにしてください")
+    if not path.is_file():
+        raise ValueError("承認対象のレポートがありません。先に生成してください")
+    value = read_json_file(path)
+    if not isinstance(value, dict):
+        raise ValueError("レポートJSONが不正です")
+    saved_revision = value.get("source_revision")
+    current_revision = _source_revision(root, start, end)
+    if not isinstance(saved_revision, str):
+        raise ValueError("旧形式レポートは再生成してから承認してください")
+    if expected_revision and expected_revision != saved_revision:
+        raise ValueError("指定したrevisionと保存済みレポートが一致しません")
+    if saved_revision != current_revision:
+        raise ValueError("日次データ更新後のstaleレポートです。再生成してください")
+    if value.get("status") == "approved":
+        return {
+            "status": "already_approved",
+            "path": str(path),
+            "source_revision": saved_revision,
+        }
+    value["status"] = "approved"
+    value["approved_at"] = now_iso()
+    atomic_write_text_many(
+        [
+            (path, _json_text(value)),
+            (log_path, renderer(value)),
+        ]
+    )
+    return {
+        "status": "approved",
+        "path": str(path),
+        "source_revision": saved_revision,
+        "approved_at": value["approved_at"],
+    }
 
 
 def _flow_source_revision(root: Path, kind: str, target: str) -> str:

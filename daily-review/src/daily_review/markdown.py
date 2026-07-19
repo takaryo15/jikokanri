@@ -29,7 +29,9 @@ def _lines_for_plan(title: str, plan: dict[str, Any] | None) -> list[str]:
     if tasks:
         lines.append("### タスク")
         for index, task in enumerate(tasks, start=1):
-            lines.append(f"{index}. {task.get('area', '未設定')}：{task.get('task', '未設定')}")
+            lines.append(
+                f"{index}. {task.get('area', '未設定')}：{task.get('task', '未設定')}"
+            )
             lines.append(f"   - 最低ライン：{task.get('minimum_line', '未設定')}")
     if plan.get("one_change_tomorrow"):
         lines.append("### 変えること")
@@ -39,7 +41,9 @@ def _lines_for_plan(title: str, plan: dict[str, Any] | None) -> list[str]:
 
 def _lines_for_task_results(entry: dict[str, Any]) -> list[str]:
     plan = entry.get("tomorrow_plan_final") or {}
-    results = {result.get("task_id"): result for result in entry.get("task_results") or []}
+    results = {
+        result.get("task_id"): result for result in entry.get("task_results") or []
+    }
     tasks = plan.get("tasks") or []
     target = plan.get("target_date", "対象日未設定")
     lines = [f"## タスク実行結果｜{target}"]
@@ -49,8 +53,12 @@ def _lines_for_task_results(entry: dict[str, Any]) -> list[str]:
         result = results.get(task.get("id"))
         lines.append(f"- {task.get('area', '未設定')}：{task.get('task', '未設定')}")
         if result:
-            lines.append(f"  - 結果：{TASK_STATUS_LABELS.get(result.get('status'), result.get('status', '未記録'))}")
-            lines.append(f"  - 最低ライン：{'達成' if result.get('minimum_line_achieved') else '未達'}")
+            lines.append(
+                f"  - 結果：{TASK_STATUS_LABELS.get(result.get('status'), result.get('status', '未記録'))}"
+            )
+            lines.append(
+                f"  - 最低ライン：{'達成' if result.get('minimum_line_achieved') else '未達'}"
+            )
             if result.get("note"):
                 lines.append(f"  - メモ：{result['note']}")
         else:
@@ -76,7 +84,9 @@ def render_daily(entry: dict[str, Any]) -> str:
     if today_main:
         lines.append("## 今日のMain")
         for item in today_main:
-            lines.append(f"- {item.get('area', '未設定')}：{item.get('status', '未設定')}")
+            lines.append(
+                f"- {item.get('area', '未設定')}：{item.get('status', '未設定')}"
+            )
             if item.get("note"):
                 lines.append(f"  - {item['note']}")
 
@@ -98,8 +108,12 @@ def render_daily(entry: dict[str, Any]) -> str:
     if review.get("one_change_tomorrow"):
         lines.extend(["## 明日変えることを1つだけ", review["one_change_tomorrow"]])
 
-    lines.extend(_lines_for_plan("明日の指示書・提案版", entry.get("tomorrow_plan_proposal")))
-    lines.extend(_lines_for_plan("明日の指示書・確定版", entry.get("tomorrow_plan_final")))
+    lines.extend(
+        _lines_for_plan("明日の指示書・提案版", entry.get("tomorrow_plan_proposal"))
+    )
+    lines.extend(
+        _lines_for_plan("明日の指示書・確定版", entry.get("tomorrow_plan_final"))
+    )
     if entry.get("tomorrow_plan_final"):
         lines.extend(_lines_for_task_results(entry))
     return "\n".join(lines).rstrip() + "\n"
@@ -128,32 +142,69 @@ def render_report(summary: dict[str, Any], title: str) -> str:
         f"確定版指示書を作れた日数：{coverage['approved_plan_days']}",
     ]
 
-    lines.extend(["## Main達成状況", f"- 対象：{main['total']}件", f"- 完了：{main['completed']}件", f"- 一部達成：{main['partial']}件", f"- 最低限のみ：{main['minimum_only']}件", f"- 未着手：{main['not_started']}件", f"- スキップ：{main['skipped']}件", f"- 結果未記録：{main['unrecorded']}件", f"- 達成率：{_percent(main['percent'])}"])
+    lines.extend(
+        [
+            "## Main達成状況",
+            f"- 対象：{main['total']}件",
+            f"- 完了：{main['completed']}件",
+            f"- 一部達成：{main['partial']}件",
+            f"- 最低限のみ：{main['minimum_only']}件",
+            f"- 未着手：{main['not_started']}件",
+            f"- スキップ：{main['skipped']}件",
+            f"- 結果未記録：{main['unrecorded']}件",
+            f"- 達成率：{_percent(main['percent'])}",
+        ]
+    )
 
     lines.append("## 最低ライン達成率")
     if minimum["percent"] is None:
         lines.extend(["算出不可", f"理由：{minimum['reason']}"])
     else:
-        lines.append(f"{minimum['achieved']}/{minimum['total']}（{minimum['percent']}%）")
+        lines.append(
+            f"{minimum['achieved']}/{minimum['total']}（{minimum['percent']}%）"
+        )
 
-    lines.extend(["## 継続状況", f"- 振り返り記録：{continuity['review_recorded']['count']}/{continuity['review_recorded']['total']}日（{_percent(continuity['review_recorded']['percent'])}）", f"- タスク結果記録：{continuity['task_results_recorded']['count']}/{continuity['task_results_recorded']['total']}日（{_percent(continuity['task_results_recorded']['percent'])}）", f"- 確定済み指示書：{continuity['approved_plan']['count']}/{continuity['approved_plan']['total']}日（{_percent(continuity['approved_plan']['percent'])}）"])
+    lines.extend(
+        [
+            "## 継続状況",
+            f"- 振り返り記録：{continuity['review_recorded']['count']}/{continuity['review_recorded']['total']}日（{_percent(continuity['review_recorded']['percent'])}）",
+            f"- タスク結果記録：{continuity['task_results_recorded']['count']}/{continuity['task_results_recorded']['total']}日（{_percent(continuity['task_results_recorded']['percent'])}）",
+            f"- 確定済み指示書：{continuity['approved_plan']['count']}/{continuity['approved_plan']['total']}日（{_percent(continuity['approved_plan']['percent'])}）",
+        ]
+    )
 
     lines.append("## 今週できたこと")
     lines.extend([f"- {item}" for item in summary["what_went_well"]] or ["未保存"])
 
     lines.append("## 崩れた原因ランキング")
     lines.extend(
-        [f"{index}. {item['cause']}（{item['count']}回）" for index, item in enumerate(summary["breakdown_ranking"], 1)]
+        [
+            f"{index}. {item['cause']}（{item['count']}回）"
+            for index, item in enumerate(summary["breakdown_ranking"], 1)
+        ]
         or ["未保存"]
     )
 
     lines.append("## 引き継ぎが多いタスク")
-    lines.extend([f"{index}. {item['task']}（{item['count']}回）" for index, item in enumerate(summary["carryover_analysis"], 1)] or ["なし"])
-    lines.extend([f"## {'翌月' if title == '月次' else '来週'}変えること1つ", summary["improvement_suggestion"]["text"]])
+    lines.extend(
+        [
+            f"{index}. {item['task']}（{item['count']}回）"
+            for index, item in enumerate(summary["carryover_analysis"], 1)
+        ]
+        or ["なし"]
+    )
+    lines.extend(
+        [
+            f"## {'翌月' if title == '月次' else '来週'}変えること1つ",
+            summary["improvement_suggestion"]["text"],
+        ]
+    )
     if summary.get("weekly_trends") is not None:
         lines.append("## 週ごとの傾向")
         for item in summary["weekly_trends"]:
-            lines.append(f"- {item['start_date']}〜{item['end_date']}：Main {_percent(item['main_completion_rate'])}、振り返り {item['review_recorded_days']}日、主な原因 {item['top_failure_reason'] or 'なし'}")
+            lines.append(
+                f"- {item['start_date']}〜{item['end_date']}：Main {_percent(item['main_completion_rate'])}、振り返り {item['review_recorded_days']}日、主な原因 {item['top_failure_reason'] or 'なし'}"
+            )
     return "\n".join(lines).rstrip() + "\n"
 
 

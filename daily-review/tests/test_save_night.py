@@ -18,8 +18,16 @@ def _night_payload(**overrides):
         "diary": "少し疲れていたが、完全に何もしない日にはならなかった。",
         "structured_review": {
             "today_main": [
-                {"area": "院試", "status": "一部進んだ", "note": "過去問の問題文を確認した"},
-                {"area": "研究", "status": "一部進んだ", "note": "RGSスペクトルを確認した"},
+                {
+                    "area": "院試",
+                    "status": "一部進んだ",
+                    "note": "過去問の問題文を確認した",
+                },
+                {
+                    "area": "研究",
+                    "status": "一部進んだ",
+                    "note": "RGSスペクトルを確認した",
+                },
             ],
             "minimum_line": {"院試": "達成", "研究": "達成"},
             "what_went_well": ["学校に行けた"],
@@ -30,9 +38,24 @@ def _night_payload(**overrides):
             "target_date": "2026-07-14",
             "main": ["院試", "研究", "筋トレ・健康"],
             "tasks": [
-                {"area": "院試", "task": "過去問を大問1つ解く", "priority": 1, "minimum_line": "問題文を開く"},
-                {"area": "研究", "task": "RGS1とRGS2のスペクトルを確認する", "priority": 2, "minimum_line": "図を1枚開く"},
-                {"area": "筋トレ・健康", "task": "体調を見て軽く運動する", "priority": 3, "minimum_line": "プロテインを飲む"},
+                {
+                    "area": "院試",
+                    "task": "過去問を大問1つ解く",
+                    "priority": 1,
+                    "minimum_line": "問題文を開く",
+                },
+                {
+                    "area": "研究",
+                    "task": "RGS1とRGS2のスペクトルを確認する",
+                    "priority": 2,
+                    "minimum_line": "図を1枚開く",
+                },
+                {
+                    "area": "筋トレ・健康",
+                    "task": "体調を見て軽く運動する",
+                    "priority": 3,
+                    "minimum_line": "プロテインを飲む",
+                },
             ],
             "one_change_tomorrow": "朝イチで過去問を開く",
         },
@@ -42,13 +65,17 @@ def _night_payload(**overrides):
 
 
 def _write_json(path, payload):
-    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
 
 
 def _save_night(tmp_path, payload=None, *extra_args):
     path = tmp_path / "night.json"
     _write_json(path, payload or _night_payload())
-    return runner.invoke(app, ["save-night", "--file", str(path), "--root", str(tmp_path), *extra_args])
+    return runner.invoke(
+        app, ["save-night", "--file", str(path), "--root", str(tmp_path), *extra_args]
+    )
 
 
 def _write_existing_entry(tmp_path, payload):
@@ -99,7 +126,10 @@ def test_save_night_accepts_standard_input(tmp_path):
         input=json.dumps(payload, ensure_ascii=False),
     )
     assert result.exit_code == 0
-    assert load_daily(tmp_path, "2026-07-13")["tomorrow_plan_proposal"]["target_date"] == "2026-07-14"
+    assert (
+        load_daily(tmp_path, "2026-07-13")["tomorrow_plan_proposal"]["target_date"]
+        == "2026-07-14"
+    )
 
 
 def test_save_night_allows_matching_cli_and_json_dates(tmp_path):
@@ -143,7 +173,14 @@ def test_save_night_keeps_existing_final_plan(tmp_path):
         "status": "approved",
         "target_date": "2026-07-14",
         "main": ["院試"],
-        "tasks": [{"area": "院試", "task": "既存の確定タスク", "priority": 1, "minimum_line": "読む"}],
+        "tasks": [
+            {
+                "area": "院試",
+                "task": "既存の確定タスク",
+                "priority": 1,
+                "minimum_line": "読む",
+            }
+        ],
         "one_change_tomorrow": "既存",
         "approved_at": "2026-07-13T22:30:00+09:00",
     }
@@ -194,14 +231,21 @@ def test_save_night_rejects_more_than_three_main_items(tmp_path):
 def test_save_night_saves_with_warning_when_task_count_is_seven(tmp_path):
     proposal = _night_payload()["tomorrow_plan_proposal"]
     proposal["tasks"] = [
-        {"area": "院試", "task": f"task {index}", "priority": index + 1, "minimum_line": "読む"}
+        {
+            "area": "院試",
+            "task": f"task {index}",
+            "priority": index + 1,
+            "minimum_line": "読む",
+        }
         for index in range(7)
     ]
     result = _save_night(tmp_path, _night_payload(tomorrow_plan_proposal=proposal))
     assert result.exit_code == 0
     assert "警告" in result.output
     assert "通常タスク" in result.output
-    assert len(load_daily(tmp_path, "2026-07-13")["tomorrow_plan_proposal"]["tasks"]) == 7
+    assert (
+        len(load_daily(tmp_path, "2026-07-13")["tomorrow_plan_proposal"]["tasks"]) == 7
+    )
 
 
 def test_save_night_rejects_blank_raw_log(tmp_path):
@@ -213,7 +257,9 @@ def test_save_night_rejects_blank_raw_log(tmp_path):
 
 def test_show_proposal_displays_proposal_summary(tmp_path):
     assert _save_night(tmp_path).exit_code == 0
-    result = runner.invoke(app, ["show-proposal", "--date", "2026-07-13", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["show-proposal", "--date", "2026-07-13", "--root", str(tmp_path)]
+    )
     assert result.exit_code == 0
     assert "明日の指示書・提案版｜2026-07-14" in result.output
     assert "1. 院試" in result.output
@@ -222,7 +268,9 @@ def test_show_proposal_displays_proposal_summary(tmp_path):
 
 def test_show_proposal_makes_unapproved_status_explicit(tmp_path):
     assert _save_night(tmp_path).exit_code == 0
-    result = runner.invoke(app, ["show-proposal", "--date", "2026-07-13", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["show-proposal", "--date", "2026-07-13", "--root", str(tmp_path)]
+    )
     assert result.exit_code == 0
     assert "状態: 未承認" in result.output
 

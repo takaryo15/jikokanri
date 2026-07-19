@@ -18,8 +18,20 @@ from .scheduler import load_scheduler_config
 LABEL = "com.daily-review.scheduler"
 
 
-def _executable(explicit: str | None = None) -> str:
-    value = explicit or shutil.which("daily-review")
+def resolve_cli_executable(explicit: str | None = None) -> str:
+    """Resolve the entry point belonging to the active Python environment."""
+    # Do not resolve sys.executable before selecting its sibling: a venv's
+    # python is commonly a symlink to the base interpreter, while its
+    # daily-review entry point lives beside that symlink.
+    sibling = Path(sys.executable).expanduser().parent / "daily-review"
+    invoked = Path(sys.argv[0]).expanduser()
+    invoked_path = invoked.resolve() if invoked.name == "daily-review" else None
+    value = (
+        explicit
+        or (str(sibling) if sibling.is_file() else None)
+        or (str(invoked_path) if invoked_path and invoked_path.is_file() else None)
+        or shutil.which("daily-review")
+    )
     if not value:
         raise ValueError("daily-review実行ファイルが見つかりません")
     return str(Path(value).resolve())
@@ -38,7 +50,7 @@ def expected_plist(
     return {
         "Label": LABEL,
         "ProgramArguments": [
-            _executable(executable),
+            resolve_cli_executable(executable),
             "scheduler",
             "run-due",
             "--root",
@@ -52,7 +64,7 @@ def expected_plist(
         "StandardOutPath": str((root / "logs" / "scheduler.log").resolve()),
         "StandardErrorPath": str((root / "logs" / "scheduler-error.log").resolve()),
         "EnvironmentVariables": {
-            "PATH": os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin"),
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
             "PYTHONUNBUFFERED": "1",
         },
         "ProcessType": "Background",
@@ -144,6 +156,7 @@ def install_scheduler(
         temporary = Path(handle.name)
     try:
         os.replace(temporary, path)
+        path.chmod(0o600)
     finally:
         temporary.unlink(missing_ok=True)
     subprocess.run(

@@ -18,7 +18,7 @@ from pydantic import (
 from .date_utils import parse_date
 
 
-API_VERSION = "1"
+API_VERSION: Literal["1"] = "1"
 MAX_COMMANDS = 20
 MAX_RAW_INPUT = 20_000
 MAX_ITEMS = 100
@@ -308,6 +308,35 @@ class CommandRequest(ApiModel):
     commands: list[Command] = Field(default_factory=list, max_length=MAX_COMMANDS)
     execution_policy: Literal["atomic", "best_effort"] = "atomic"
     confirmation_token: StrictStr | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_unsafe_structure(cls, value: Any) -> Any:
+        """Bound nesting and reject characters unsafe for files and terminals."""
+
+        def visit(item: Any, depth: int = 0) -> None:
+            if depth > 20:
+                raise ValueError("JSONのネストは20階層以内にしてください")
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    visit(key, depth + 1)
+                    visit(child, depth + 1)
+            elif isinstance(item, list):
+                for child in item:
+                    visit(child, depth + 1)
+            elif isinstance(item, str):
+                if "\x00" in item:
+                    raise ValueError("null byteは使用できません")
+                if any(
+                    ord(character) < 32 and character not in "\n\r\t"
+                    for character in item
+                ):
+                    raise ValueError("制御文字は使用できません")
+                if any(0xD800 <= ord(character) <= 0xDFFF for character in item):
+                    raise ValueError("不正なUnicode surrogateは使用できません")
+
+        visit(value)
+        return value
 
     @field_validator("effective_date")
     @classmethod

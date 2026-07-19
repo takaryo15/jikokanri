@@ -196,7 +196,9 @@ def _api_tasks(root: Path) -> list[dict[str, Any]]:
                 "title": _text(item.get("title")) or "未設定",
                 "description": _text(item.get("description")),
                 "status": _text(item.get("status")) or "pending",
-                "priority": _priority(item.get("priority"), is_main=bool(item.get("is_main"))),
+                "priority": _priority(
+                    item.get("priority"), is_main=bool(item.get("is_main"))
+                ),
                 "category": _text(item.get("category")),
                 "due_date": _text(item.get("due_date")),
                 "is_main": bool(item.get("is_main")),

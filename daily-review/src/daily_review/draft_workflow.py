@@ -1,4 +1,5 @@
 """Editing and approval helpers for rule-based organization drafts."""
+
 from __future__ import annotations
 
 import shutil
@@ -10,7 +11,13 @@ from .date_utils import tomorrow_of
 from .markdown import render_daily
 from .models import DailyEntry, now_iso
 from .organizer import EDITABLE_DRAFT_FIELDS, add_draft_revision
-from .storage import atomic_write_json_data_many, daily_log_path, daily_path, load_daily, write_text
+from .storage import (
+    atomic_write_json_data_many,
+    daily_log_path,
+    daily_path,
+    load_daily,
+    write_text,
+)
 from .validation import validate_plan
 
 
@@ -25,20 +32,27 @@ def _clean_items(values: list[str]) -> list[str]:
     return cleaned
 
 
-def replace_draft_fields(draft: dict[str, Any], replacements: dict[str, list[str]], *, force: bool) -> list[str]:
+def replace_draft_fields(
+    draft: dict[str, Any], replacements: dict[str, list[str]], *, force: bool
+) -> list[str]:
     """Apply explicit list replacements and return fields that actually changed."""
     unknown = sorted(set(replacements) - set(EDITABLE_DRAFT_FIELDS))
     if unknown:
         raise ValueError("編集できないフィールドです: " + ", ".join(unknown))
     if draft.get("status", "draft") == "approved" and not force:
-        raise PermissionError("承認済みドラフトは編集できません。--forceを指定すると編集できます")
+        raise PermissionError(
+            "承認済みドラフトは編集できません。--forceを指定すると編集できます"
+        )
 
     changed: list[str] = []
     for field, values in replacements.items():
         group, key = field.split(".", 1) if "." in field else (None, field)
         target = draft[group] if group else draft
         cleaned = _clean_items(values)
-        if field in {"today.main_candidates", "tomorrow.main_candidates"} and len(cleaned) > 3:
+        if (
+            field in {"today.main_candidates", "tomorrow.main_candidates"}
+            and len(cleaned) > 3
+        ):
             raise ValueError(f"{field} は最大3件です")
         if target.get(key) != cleaned:
             target[key] = cleaned
@@ -65,7 +79,9 @@ def _items(draft: dict[str, Any], field: str) -> list[str]:
     return _clean_items(value)
 
 
-def _today_results(draft: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, str]]:
+def _today_results(
+    draft: dict[str, Any],
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     result_entries: list[dict[str, Any]] = []
     status_by_text: dict[str, str] = {}
     for source, status, achieved in (
@@ -89,7 +105,9 @@ def _today_results(draft: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[st
     return result_entries, status_by_text
 
 
-def build_daily_from_draft(existing: dict[str, Any], day: str, draft: dict[str, Any]) -> dict[str, Any]:
+def build_daily_from_draft(
+    existing: dict[str, Any], day: str, draft: dict[str, Any]
+) -> dict[str, Any]:
     """Merge approved draft content into a compatible daily-record document."""
     entry = deepcopy(existing)
     today_main = _items(draft, "today.main_candidates")
@@ -104,15 +122,19 @@ def build_daily_from_draft(existing: dict[str, Any], day: str, draft: dict[str, 
     unclassified = _items(draft, "unclassified")
 
     if not tomorrow_main:
-        raise ValueError("明日のMain候補がありません。edit-draftで追加してから承認してください")
+        raise ValueError(
+            "明日のMain候補がありません。edit-draftで追加してから承認してください"
+        )
     all_tomorrow = _clean_items(tomorrow_main + tomorrow_other)
     task_results, status_by_text = _today_results(draft)
     structured_main = [
         {
             "area": item,
-            "status": {"completed": "完了", "partial": "一部進んだ", "not_started": "未完了"}.get(
-                status_by_text.get(item), "未記録"
-            ),
+            "status": {
+                "completed": "完了",
+                "partial": "一部進んだ",
+                "not_started": "未完了",
+            }.get(status_by_text.get(item), "未記録"),
             "note": item,
         }
         for item in today_main
@@ -176,12 +198,16 @@ def backup_daily_before_reapproval(root: Path, day: str) -> Path | None:
     destination = root / "data" / "backups" / "daily" / f"{day}_{timestamp}.json"
     destination.parent.mkdir(parents=True, exist_ok=True)
     while destination.exists():
-        destination = destination.with_name(destination.stem + "_1" + destination.suffix)
+        destination = destination.with_name(
+            destination.stem + "_1" + destination.suffix
+        )
     shutil.copy2(source, destination)
     return destination
 
 
-def approve_draft(root: Path, day: str, draft: dict[str, Any], *, force: bool = False) -> dict[str, Path | None]:
+def approve_draft(
+    root: Path, day: str, draft: dict[str, Any], *, force: bool = False
+) -> dict[str, Path | None]:
     """Atomically save an approved draft and its daily-record counterpart."""
     current_entry = load_daily(root, day) or {}
     daily_entry = build_daily_from_draft(current_entry, day, draft)
@@ -202,4 +228,9 @@ def approve_draft(root: Path, day: str, draft: dict[str, Any], *, force: bool = 
     draft_file = root / "data" / "drafts" / f"{day}.json"
     atomic_write_json_data_many([(daily_file, daily_entry), (draft_file, draft)])
     markdown_path = write_text(daily_log_path(root, day), render_daily(daily_entry))
-    return {"daily_path": daily_file, "draft_path": draft_file, "markdown_path": markdown_path, "backup_path": backup_path}
+    return {
+        "daily_path": daily_file,
+        "draft_path": draft_file,
+        "markdown_path": markdown_path,
+        "backup_path": backup_path,
+    }

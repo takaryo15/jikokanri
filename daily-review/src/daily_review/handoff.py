@@ -1,4 +1,5 @@
 """Creation, persistence, and validation of safe ChatGPT handoffs."""
+
 from __future__ import annotations
 
 import uuid
@@ -33,7 +34,9 @@ def expires_at(day: str) -> str:
     from .date_utils import parse_date
 
     next_day = parse_date(day) + timedelta(days=1)
-    return datetime.combine(next_day, time(5), tzinfo=ZoneInfo("Asia/Tokyo")).isoformat(timespec="seconds")
+    return datetime.combine(next_day, time(5), tzinfo=ZoneInfo("Asia/Tokyo")).isoformat(
+        timespec="seconds"
+    )
 
 
 def new_session_id(day: str) -> str:
@@ -48,7 +51,9 @@ def load_handoffs(root: Path, day: str) -> dict[str, Any]:
     if not isinstance(value, dict) or value.get("date") not in (None, day):
         raise HandoffError("handoff JSONの日付が不正です")
     handoffs = value.get("handoffs")
-    if not isinstance(handoffs, list) or not all(isinstance(item, dict) for item in handoffs):
+    if not isinstance(handoffs, list) or not all(
+        isinstance(item, dict) for item in handoffs
+    ):
         raise HandoffError("handoff JSONのhandoffsが不正です")
     return value
 
@@ -59,7 +64,9 @@ def save_handoffs(root: Path, day: str, payload: dict[str, Any]) -> Path:
     return handoff_path(root, day)
 
 
-def issue_handoff(root: Path, day: str, prompt: str, prompt_hash: str) -> dict[str, Any]:
+def issue_handoff(
+    root: Path, day: str, prompt: str, prompt_hash: str
+) -> dict[str, Any]:
     payload = load_handoffs(root, day)
     item = {
         "session_id": new_session_id(day),
@@ -94,13 +101,16 @@ def render_handoff(day: str, prompt: str, item: dict[str, Any]) -> str:
         f'    "prompt_hash": "{item["prompt_hash"]}"\n'
         "  },\n"
     )
-    bound_prompt = prompt.replace('  "schema_version": "1.0",\n  "date":', '  "schema_version": "1.0",\n' + handoff_json + '  "date":', 1)
+    bound_prompt = prompt.replace(
+        '  "schema_version": "1.0",\n  "date":',
+        '  "schema_version": "1.0",\n' + handoff_json + '  "date":',
+        1,
+    )
     required = (
         "\n出力JSONには必ずhandoff情報を含めてください。\n"
         "```json\n"
         "{\n"
-        '  "schema_version": "1.0",\n'
-        + handoff_json.rstrip(",\n") + "\n"
+        '  "schema_version": "1.0",\n' + handoff_json.rstrip(",\n") + "\n"
         "}\n"
         "```\n"
         "===== DAILY-REVIEW HANDOFF END =====\n"
@@ -108,7 +118,9 @@ def render_handoff(day: str, prompt: str, item: dict[str, Any]) -> str:
     return metadata + bound_prompt.rstrip() + "\n" + required
 
 
-def find_handoff(root: Path, day: str, session_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+def find_handoff(
+    root: Path, day: str, session_id: str
+) -> tuple[dict[str, Any], dict[str, Any]]:
     payload = load_handoffs(root, day)
     for item in payload["handoffs"]:
         if item.get("session_id") == session_id:
@@ -128,7 +140,14 @@ def is_expired(item: dict[str, Any], *, now: datetime | None = None) -> bool:
         raise HandoffError("handoffのexpires_atが不正です") from exc
 
 
-def validate_response(root: Path, payload: dict[str, Any], *, requested_day: str | None, allow_expired: bool, force: bool) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
+def validate_response(
+    root: Path,
+    payload: dict[str, Any],
+    *,
+    requested_day: str | None,
+    allow_expired: bool,
+    force: bool,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str]:
     """Verify a response before raw text or a draft can be written."""
     handoff = payload.get("handoff")
     if not isinstance(handoff, dict):
@@ -142,7 +161,9 @@ def validate_response(root: Path, payload: dict[str, Any], *, requested_day: str
     if requested_day is not None and requested_day != day:
         raise HandoffError(f"日付が一致しません\nCLI指定: {requested_day}\nJSON: {day}")
     if handoff["date"] != day:
-        raise HandoffError(f"handoffの日付が一致しません\nhandoff: {handoff['date']}\nJSON: {day}")
+        raise HandoffError(
+            f"handoffの日付が一致しません\nhandoff: {handoff['date']}\nJSON: {day}"
+        )
     manifest, item = find_handoff(root, day, handoff["session_id"])
     if item.get("prompt_hash") != handoff["prompt_hash"]:
         raise HandoffError("handoffのprompt_hashが一致しません")
@@ -152,10 +173,14 @@ def validate_response(root: Path, payload: dict[str, Any], *, requested_day: str
     if status == "approved":
         raise HandoffError("このhandoffはすでに承認済みです")
     if status == "received" and not force:
-        raise HandoffError(f"このhandoffはすでに受信済みです\nsession_id: {handoff['session_id']}")
+        raise HandoffError(
+            f"このhandoffはすでに受信済みです\nsession_id: {handoff['session_id']}"
+        )
     expired = is_expired(item)
     if expired and not allow_expired:
-        raise HandoffError(f"このhandoffは期限切れです\n対象日: {day}\n期限: {item['expires_at']}")
+        raise HandoffError(
+            f"このhandoffは期限切れです\n対象日: {day}\n期限: {item['expires_at']}"
+        )
     if status == "expired" and not allow_expired:
         raise HandoffError("このhandoffは期限切れです")
     content_hash = import_hash(payload)
@@ -165,7 +190,15 @@ def validate_response(root: Path, payload: dict[str, Any], *, requested_day: str
     return manifest, item, handoff, content_hash
 
 
-def update_handoff(root: Path, day: str, manifest: dict[str, Any], item: dict[str, Any], *, status: str, content_hash: str | None = None) -> None:
+def update_handoff(
+    root: Path,
+    day: str,
+    manifest: dict[str, Any],
+    item: dict[str, Any],
+    *,
+    status: str,
+    content_hash: str | None = None,
+) -> None:
     if status not in HANDOFF_STATUSES:
         raise HandoffError(f"handoffのstatusが不正です: {status}")
     item["status"] = status
@@ -176,13 +209,21 @@ def update_handoff(root: Path, day: str, manifest: dict[str, Any], item: dict[st
     save_handoffs(root, day, manifest)
 
 
-def cancel_handoff(root: Path, day: str, *, session_id: str | None, latest: bool) -> dict[str, Any]:
+def cancel_handoff(
+    root: Path, day: str, *, session_id: str | None, latest: bool
+) -> dict[str, Any]:
     payload = load_handoffs(root, day)
     candidates = payload["handoffs"]
     if session_id:
-        candidates = [item for item in candidates if item.get("session_id") == session_id]
+        candidates = [
+            item for item in candidates if item.get("session_id") == session_id
+        ]
     elif latest:
-        candidates = [item for item in candidates if item.get("status") in {"issued", "received", "expired"}]
+        candidates = [
+            item
+            for item in candidates
+            if item.get("status") in {"issued", "received", "expired"}
+        ]
         candidates = candidates[-1:]
     else:
         raise HandoffError("--session-id または --latest を指定してください")

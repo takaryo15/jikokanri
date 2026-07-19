@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Run the v1.1 handoff path in an isolated, disposable workspace."""
+
 from __future__ import annotations
 
 import json
 import os
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 
@@ -39,17 +39,38 @@ def main() -> None:
         item = json.loads(handoff_path.read_text(encoding="utf-8"))["handoffs"][0]
         response = {
             "schema_version": "1.0",
-            "handoff": {"version": "1.0", "session_id": item["session_id"], "date": DAY, "prompt_hash": item["prompt_hash"]},
+            "handoff": {
+                "version": "1.0",
+                "session_id": item["session_id"],
+                "date": DAY,
+                "prompt_hash": item["prompt_hash"],
+            },
             "date": DAY,
             "raw_text": "院試の過去問を解いた。明日は研究を進める。",
-            "today": {"main": ["院試の過去問を解いた"], "completed": ["院試の過去問を解いた"], "partial": [], "not_completed": []},
-            "reflection": {"good": ["集中できた"], "problems": [], "causes": [], "change_next": ["朝に始める"]},
-            "tomorrow": {"main": ["研究を進める"], "other_tasks": [], "minimum": ["資料を開く"]},
+            "today": {
+                "main": ["院試の過去問を解いた"],
+                "completed": ["院試の過去問を解いた"],
+                "partial": [],
+                "not_completed": [],
+            },
+            "reflection": {
+                "good": ["集中できた"],
+                "problems": [],
+                "causes": [],
+                "change_next": ["朝に始める"],
+            },
+            "tomorrow": {
+                "main": ["研究を進める"],
+                "other_tasks": [],
+                "minimum": ["資料を開く"],
+            },
             "journal": [],
             "unclassified": [],
         }
         response_path = root / "response.json"
-        response_path.write_text(json.dumps(response, ensure_ascii=False), encoding="utf-8")
+        response_path.write_text(
+            json.dumps(response, ensure_ascii=False), encoding="utf-8"
+        )
         run(root, "receive", "--file", str(response_path), "--yes")
         run(root, "summary", "--date", DAY)
         run(root, "doctor")

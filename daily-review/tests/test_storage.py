@@ -34,7 +34,15 @@ def test_save_raw_creates_daily_json_and_markdown(tmp_path):
     raw_file.write_text("今日の生ログ\nそのまま保存", encoding="utf-8")
     result = runner.invoke(
         app,
-        ["save-raw", "--date", "2026-07-13", "--file", str(raw_file), "--root", str(tmp_path)],
+        [
+            "save-raw",
+            "--date",
+            "2026-07-13",
+            "--file",
+            str(raw_file),
+            "--root",
+            str(tmp_path),
+        ],
     )
     assert result.exit_code == 0
     entry = load_daily(tmp_path, "2026-07-13")
@@ -45,13 +53,35 @@ def test_save_raw_creates_daily_json_and_markdown(tmp_path):
 def test_save_raw_update_keeps_other_fields(tmp_path):
     raw_file = tmp_path / "raw.txt"
     raw_file.write_text("old", encoding="utf-8")
-    runner.invoke(app, ["save-raw", "--date", "2026-07-13", "--file", str(raw_file), "--root", str(tmp_path)])
+    runner.invoke(
+        app,
+        [
+            "save-raw",
+            "--date",
+            "2026-07-13",
+            "--file",
+            str(raw_file),
+            "--root",
+            str(tmp_path),
+        ],
+    )
     entry_path = tmp_path / "data" / "daily" / "2026-07-13.json"
     entry = json.loads(entry_path.read_text(encoding="utf-8"))
     entry["diary"] = "消えない日記"
     entry_path.write_text(json.dumps(entry, ensure_ascii=False), encoding="utf-8")
     raw_file.write_text("new", encoding="utf-8")
-    result = runner.invoke(app, ["save-raw", "--date", "2026-07-13", "--file", str(raw_file), "--root", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "save-raw",
+            "--date",
+            "2026-07-13",
+            "--file",
+            str(raw_file),
+            "--root",
+            str(tmp_path),
+        ],
+    )
     assert result.exit_code == 0
     updated = load_daily(tmp_path, "2026-07-13")
     assert updated["raw_log"] == "new"
@@ -61,7 +91,18 @@ def test_save_raw_update_keeps_other_fields(tmp_path):
 def test_atomic_json_write_leaves_no_temp_file(tmp_path):
     raw_file = tmp_path / "raw.txt"
     raw_file.write_text("raw", encoding="utf-8")
-    result = runner.invoke(app, ["save-raw", "--date", "2026-07-13", "--file", str(raw_file), "--root", str(tmp_path)])
+    result = runner.invoke(
+        app,
+        [
+            "save-raw",
+            "--date",
+            "2026-07-13",
+            "--file",
+            str(raw_file),
+            "--root",
+            str(tmp_path),
+        ],
+    )
     assert result.exit_code == 0
     assert not list((tmp_path / "data" / "daily").glob("*.tmp"))
 
@@ -69,7 +110,18 @@ def test_atomic_json_write_leaves_no_temp_file(tmp_path):
 def test_list_shows_saved_daily_statuses(tmp_path):
     raw_file = tmp_path / "raw.txt"
     raw_file.write_text("raw", encoding="utf-8")
-    runner.invoke(app, ["save-raw", "--date", "2026-07-13", "--file", str(raw_file), "--root", str(tmp_path)])
+    runner.invoke(
+        app,
+        [
+            "save-raw",
+            "--date",
+            "2026-07-13",
+            "--file",
+            str(raw_file),
+            "--root",
+            str(tmp_path),
+        ],
+    )
     result = runner.invoke(app, ["list", "--root", str(tmp_path), "--limit", "7"])
     assert result.exit_code == 0
     assert "2026-07-13" in result.output

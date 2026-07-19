@@ -1,4 +1,5 @@
 """Safe parsing and validation for copied ChatGPT reflection JSON."""
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,16 @@ from .date_utils import parse_date, today_string
 SCHEMA_VERSION = "1.0"
 MAX_INPUT_BYTES = 100 * 1024
 
-ROOT_FIELDS = {"schema_version", "date", "raw_text", "today", "reflection", "tomorrow", "journal", "unclassified"}
+ROOT_FIELDS = {
+    "schema_version",
+    "date",
+    "raw_text",
+    "today",
+    "reflection",
+    "tomorrow",
+    "journal",
+    "unclassified",
+}
 OPTIONAL_ROOT_FIELDS = {"handoff"}
 SECTION_FIELDS = {
     "today": {"main", "completed", "partial", "not_completed"},
@@ -46,7 +56,9 @@ def extract_json(text: str) -> dict[str, Any]:
     if not candidates:
         raise ChatSchemaError("JSONを抽出できません")
     if len(candidates) != 1:
-        raise ChatSchemaError("JSON候補が複数あります。1つのJSONだけをコピーしてください")
+        raise ChatSchemaError(
+            "JSON候補が複数あります。1つのJSONだけをコピーしてください"
+        )
     return candidates[0]
 
 
@@ -80,7 +92,9 @@ def validate_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]
         raise ChatSchemaError("必須フィールドがありません: " + ", ".join(missing))
     version = payload["schema_version"]
     if version != SCHEMA_VERSION:
-        raise ChatSchemaError(f"未対応のschema_versionです: {version}\n対応バージョン: {SCHEMA_VERSION}")
+        raise ChatSchemaError(
+            f"未対応のschema_versionです: {version}\n対応バージョン: {SCHEMA_VERSION}"
+        )
     if not isinstance(payload["date"], str):
         raise ChatSchemaError("dateはYYYY-MM-DD形式の文字列にしてください")
     try:
@@ -94,7 +108,11 @@ def validate_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]
         raise ChatSchemaError("raw_textは空でない文字列にしてください")
 
     warnings = _unknown_field_warnings(payload, ROOT_FIELDS | OPTIONAL_ROOT_FIELDS)
-    result: dict[str, Any] = {"schema_version": version, "date": payload["date"], "raw_text": raw_text}
+    result: dict[str, Any] = {
+        "schema_version": version,
+        "date": payload["date"],
+        "raw_text": raw_text,
+    }
     for section, fields in SECTION_FIELDS.items():
         value = payload[section]
         if not isinstance(value, dict):
@@ -102,10 +120,17 @@ def validate_payload(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]
         warnings.extend(_unknown_field_warnings(value, fields, section=section))
         missing_fields = sorted(fields - set(value))
         if missing_fields:
-            raise ChatSchemaError(f"{section}の必須フィールドがありません: " + ", ".join(missing_fields))
-        result[section] = {field: _validate_text_list(value[field], f"{section}.{field}") for field in fields}
+            raise ChatSchemaError(
+                f"{section}の必須フィールドがありません: " + ", ".join(missing_fields)
+            )
+        result[section] = {
+            field: _validate_text_list(value[field], f"{section}.{field}")
+            for field in fields
+        }
     result["journal"] = _validate_text_list(payload["journal"], "journal")
-    result["unclassified"] = _validate_text_list(payload["unclassified"], "unclassified")
+    result["unclassified"] = _validate_text_list(
+        payload["unclassified"], "unclassified"
+    )
     if "handoff" in payload:
         if not isinstance(payload["handoff"], dict):
             raise ChatSchemaError("handoffはオブジェクトにしてください")
@@ -125,13 +150,17 @@ def _validate_text_list(value: Any, field: str) -> list[str]:
     return list(value)
 
 
-def _unknown_field_warnings(value: dict[str, Any], known: set[str], *, section: str = "") -> list[str]:
+def _unknown_field_warnings(
+    value: dict[str, Any], known: set[str], *, section: str = ""
+) -> list[str]:
     warnings: list[str] = []
     for key in sorted(set(value) - known):
         label = f"{section}.{key}" if section else key
         warning = f"unknown field: {label}"
         close = get_close_matches(key, sorted(known), n=1, cutoff=0.75)
         if close:
-            warning += f"（もしかして {section + '.' if section else ''}{close[0]} ですか？）"
+            warning += (
+                f"（もしかして {section + '.' if section else ''}{close[0]} ですか？）"
+            )
         warnings.append(warning)
     return warnings

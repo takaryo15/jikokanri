@@ -1,0 +1,7 @@
+{
+  "schema_version": "1",
+  "timezone": "Asia/Tokyo",
+  "week_start": "tuesday",
+  "main_limit": 3,
+  "data_root": "."
+}

@@ -4,10 +4,12 @@ from pathlib import Path
 from typing import Any
 
 from .date_utils import date_range, month_range_for, tomorrow_of, week_range_for
-from .storage import daily_path, draft_path, inbox_path, load_daily, read_json_file
+from .storage import draft_path, inbox_path, load_daily, read_json_file
 
 
-def _load_daily_safely(root: Path, day: str, errors: list[str]) -> dict[str, Any] | None:
+def _load_daily_safely(
+    root: Path, day: str, errors: list[str]
+) -> dict[str, Any] | None:
     try:
         return load_daily(root, day)
     except (OSError, ValueError) as exc:
@@ -15,7 +17,9 @@ def _load_daily_safely(root: Path, day: str, errors: list[str]) -> dict[str, Any
         return None
 
 
-def _find_final_by_target(root: Path, target: str, errors: list[str]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+def _find_final_by_target(
+    root: Path, target: str, errors: list[str]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     directory = root / "data" / "daily"
     if not directory.is_dir():
         return None, None
@@ -32,7 +36,11 @@ def _find_final_by_target(root: Path, target: str, errors: list[str]) -> tuple[d
 
 
 def _recorded_days(root: Path, start: str, end: str, errors: list[str]) -> int:
-    return sum(1 for day in date_range(start, end) if _load_daily_safely(root, day, errors) is not None)
+    return sum(
+        1
+        for day in date_range(start, end)
+        if _load_daily_safely(root, day, errors) is not None
+    )
 
 
 def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
@@ -40,13 +48,26 @@ def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
     errors: list[str] = []
     entry = _load_daily_safely(root, day, errors) or {}
     final_entry, today_final = _find_final_by_target(root, day, errors)
-    results = {item.get("task_id"): item for item in (final_entry or {}).get("task_results") or []}
+    results = {
+        item.get("task_id"): item
+        for item in (final_entry or {}).get("task_results") or []
+    }
     tasks = today_final.get("tasks") or [] if today_final else []
     recorded_results = sum(1 for task in tasks if task.get("id") in results)
-    draft_approval = entry.get("draft_approval") if isinstance(entry.get("draft_approval"), dict) else {}
-    draft_result_only = not today_final and isinstance(draft_approval.get("task_results"), list)
+    draft_approval = (
+        entry.get("draft_approval")
+        if isinstance(entry.get("draft_approval"), dict)
+        else {}
+    )
+    draft_result_only = not today_final and isinstance(
+        draft_approval.get("task_results"), list
+    )
     if draft_result_only:
-        results = {item.get("task_id"): item for item in draft_approval["task_results"] if isinstance(item, dict)}
+        results = {
+            item.get("task_id"): item
+            for item in draft_approval["task_results"]
+            if isinstance(item, dict)
+        }
         tasks = list(results.values())
         recorded_results = len(results)
     incomplete = []
@@ -54,7 +75,9 @@ def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
         for task in tasks:
             result = results.get(task.get("id"))
             if not result or result.get("status") != "completed":
-                incomplete.append({"task": task, "status": result.get("status") if result else None})
+                incomplete.append(
+                    {"task": task, "status": result.get("status") if result else None}
+                )
     week_start, week_end = week_range_for(day)
     month_start, month_end = month_range_for(day)
     inbox_entries: list[Any] = []
@@ -62,7 +85,9 @@ def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
     if inbox.exists():
         try:
             inbox_payload = read_json_file(inbox)
-            if not isinstance(inbox_payload, dict) or not isinstance(inbox_payload.get("entries"), list):
+            if not isinstance(inbox_payload, dict) or not isinstance(
+                inbox_payload.get("entries"), list
+            ):
                 raise ValueError("entriesがありません")
             inbox_entries = inbox_payload["entries"]
         except (OSError, ValueError) as exc:
@@ -81,9 +106,17 @@ def build_daily_summary(root: Path, day: str) -> dict[str, Any]:
         "date": day,
         "entry": entry,
         "today_final": today_final or None,
-        "today_main": (today_final or {}).get("main") or draft_approval.get("today_main") or [],
-        "task_results": {"recorded": recorded_results, "total": len(tasks), "exists": bool(results)},
-        "night_review_exists": bool(entry.get("raw_log") or entry.get("structured_review") or entry.get("diary")),
+        "today_main": (today_final or {}).get("main")
+        or draft_approval.get("today_main")
+        or [],
+        "task_results": {
+            "recorded": recorded_results,
+            "total": len(tasks),
+            "exists": bool(results),
+        },
+        "night_review_exists": bool(
+            entry.get("raw_log") or entry.get("structured_review") or entry.get("diary")
+        ),
         "tomorrow_proposal": entry.get("tomorrow_plan_proposal"),
         "tomorrow_final": entry.get("tomorrow_plan_final"),
         "week_recorded_days": _recorded_days(root, week_start, week_end, errors),

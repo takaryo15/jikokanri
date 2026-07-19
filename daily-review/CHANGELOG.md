@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [1.3.0] - 2026-07-19
 
 ### Added
 
@@ -10,6 +10,9 @@
 - morning/nightly/weekly/monthlyの運用フロー、火曜〜月曜の週次draft、前月比較付き月次draft。
 - macOS launchd plistの安全な生成・dry-run・明示installと、quiet hours通知保留。
 - schedulerと運用フローのCommand API command、およびschedule・retry・launchd・E2Eテスト。
+- `daily-review setup`、`onboarding`、統合`config show/validate/path`。
+- v1.0〜v1.3のschema確認、backup必須のmigration applyとrollback手順。
+- 週次・月次レポートのsource revision、stale拒否、明示承認。
 - manifest、size、SHA-256、件数、data versionを持つ検証可能なZIPバックアップと`backup create/list/inspect/verify/delete`。
 - restoreのmerge/replace/missing-only preview、stale検出付きconfirmation token、復元前自動バックアップ、復元履歴。
 - タスクを複製せず元期限と繰越回数を保持する`rollover preview/apply/history`、長期未完了警告・分解提案。
@@ -34,6 +37,8 @@
 - 従来の`backup`、`restore BACKUP_FILE`、`doctor`を維持したままpreview-firstのサブコマンドを追加しました。
 - 通知設定がない旧環境は組み込みデフォルトを使い、既知項目だけを互換的に上書きするようにしました。
 - `doctor`と`release-check`へ通知設定・履歴、およびv1.3コマンド基盤の検査を追加しました。
+- `home`へ最低限、期限超過、前日未完了、scheduler、最後のbackup、JSON出力を統合しました。
+- `release-check`をpackage、データ安全性、文書、Gitを確認するv1.3ゲートへ更新しました。
 
 ### Safety
 
@@ -47,6 +52,29 @@
 - 明日やることの先頭3件だけをMain候補にし、残りをバックログ候補へ保持して自動承認しません。
 - CSVは既存出力を明示的な`--force`なしに上書きせず、数式開始文字を無害化します。
 - 通知は対象データを含む安定キーで重複送信を抑止し、送信失敗を日次保存処理から分離します。
+- API入力の深度、null byte、不正な制御文字とUnicodeを保存前に拒否します。
+- launchd plistはshellを使わず、絶対実行パス、固定PATH、0600権限で生成します。
+- migrationは検証済みbackupを作成してから不足項目だけを追加します。
+
+### Fixed
+
+- 週次・月次レポートが元データ更新後も古い内容のまま承認できる問題を防止しました。
+- 設定がフェーズ別ファイルへ分散して全体検証できなかった状態を統合しました。
+
+### Security
+
+- path traversal、Zip Slip、symlink、特殊ファイル、hash不一致、過大展開をrestore前に拒否します。
+- backupから秘密情報候補、秘密鍵、一時ファイル、再帰backupを除外します。
+- CSV formula injection、confirmation再利用、idempotency conflictを拒否します。
+
+### Migration
+
+- v1.0〜v1.2データを自動変換せず読み込み、`v1.3-final`履歴だけを安全に追加します。
+- 本番適用前backup、コピー上のdry-run、restoreによるrollback手順を文書化しました。
+
+### Deprecated
+
+- なし。旧来の個別コマンドは互換操作として維持します。
 
 ## 1.2.0 - 2026-07-15
 

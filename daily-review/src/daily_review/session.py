@@ -1,4 +1,5 @@
 """Small, non-authoritative state records for the ChatGPT workflow."""
+
 from __future__ import annotations
 
 import hashlib
@@ -9,7 +10,14 @@ from .models import now_iso
 from .storage import atomic_write_json_data, read_json_file, session_path
 
 
-SESSION_STATUSES = {"prompt_ready", "waiting_for_chatgpt", "imported", "draft", "approved", "cancelled"}
+SESSION_STATUSES = {
+    "prompt_ready",
+    "waiting_for_chatgpt",
+    "imported",
+    "draft",
+    "approved",
+    "cancelled",
+}
 
 
 def load_session(root: Path, day: str) -> dict[str, Any] | None:

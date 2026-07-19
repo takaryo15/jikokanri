@@ -3,6 +3,8 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 build/
+dist/
+.coverage
 data/
 logs/
 backups/
@@ -11,6 +13,7 @@ config/notifications.json
 config/api.json
 config/recovery.json
 config/scheduler.json
+config/app.json
 exports/
 *.zip
 .venv-release-test/

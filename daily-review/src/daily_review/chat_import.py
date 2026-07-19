@@ -1,4 +1,5 @@
 """Conversion and safety helpers for validated ChatGPT structured imports."""
+
 from __future__ import annotations
 
 import hashlib
@@ -17,7 +18,9 @@ PARSER_VERSION = "chat-schema-1.0"
 
 def import_hash(payload: dict[str, Any]) -> str:
     """Return a stable identifier for a validated import's contents."""
-    canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
     return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 

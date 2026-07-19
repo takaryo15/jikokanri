@@ -9,7 +9,12 @@ def _plan(**overrides):
         "target_date": "2026-07-14",
         "main": ["院試", "研究", "健康"],
         "tasks": [
-            {"area": "院試", "task": "過去問", "priority": 1, "minimum_line": "問題文だけ読む"}
+            {
+                "area": "院試",
+                "task": "過去問",
+                "priority": 1,
+                "minimum_line": "問題文だけ読む",
+            }
         ],
         "one_change_tomorrow": "朝イチで過去問を開く",
     }
@@ -24,7 +29,9 @@ def test_main_more_than_three_is_error():
 
 
 def test_missing_minimum_line_is_detected():
-    plan = _plan(tasks=[{"area": "院試", "task": "過去問", "priority": 1, "minimum_line": ""}])
+    plan = _plan(
+        tasks=[{"area": "院試", "task": "過去問", "priority": 1, "minimum_line": ""}]
+    )
     result = validate_plan(plan, "2026-07-13")
     assert any("最低ライン" in item for item in result.errors)
 

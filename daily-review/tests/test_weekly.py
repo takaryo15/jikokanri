@@ -25,15 +25,23 @@ def _write_daily(tmp_path, day, review, final=False, proposal=False):
         "status": "approved",
         "target_date": "2026-07-14",
         "main": ["院試"],
-        "tasks": [{"area": "院試", "task": "過去問", "priority": 1, "minimum_line": "読む"}],
+        "tasks": [
+            {"area": "院試", "task": "過去問", "priority": 1, "minimum_line": "読む"}
+        ],
         "one_change_tomorrow": "朝イチ",
         "approved_at": f"{day}T22:30:00+09:00",
     }
     if final:
         payload["tomorrow_plan_final"] = plan
     if proposal:
-        payload["tomorrow_plan_proposal"] = {**plan, "status": "pending_review", "approved_at": None}
-    (daily_dir / f"{day}.json").write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        payload["tomorrow_plan_proposal"] = {
+            **plan,
+            "status": "pending_review",
+            "approved_at": None,
+        }
+    (daily_dir / f"{day}.json").write_text(
+        json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+    )
 
 
 def test_tuesday_to_monday_week_range():
@@ -76,7 +84,9 @@ def test_weekly_command_writes_json_and_markdown(tmp_path):
         },
         proposal=True,
     )
-    result = runner.invoke(app, ["weekly", "--date", "2026-07-13", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["weekly", "--date", "2026-07-13", "--root", str(tmp_path)]
+    )
     assert result.exit_code == 0
     assert (tmp_path / "data" / "weekly" / "2026-07-07_2026-07-13.json").is_file()
     assert (tmp_path / "logs" / "weekly_2026-07-07_2026-07-13.md").is_file()

@@ -23,6 +23,8 @@ PLANNING_MIGRATION_ID = "v1.2-goal-planning"
 EVALUATION_MIGRATION_ID = "v1.2-goal-evaluation-rc1"
 FINAL_MIGRATION_ID = "v1.2-final"
 RECOVERY_MIGRATION_ID = "v1.3-recovery-base"
+V13_FINAL_MIGRATION_ID = "v1.3-final"
+TARGET_SCHEMA_VERSION = "1.3"
 MIGRATION_HISTORY_PATH = Path("data/migrations.json")
 MIGRATION_DIRECTORIES = (
     Path("data/inbox"),
@@ -58,6 +60,10 @@ EVALUATION_MIGRATION_DIRECTORIES = (
     Path("data/transactions"),
 )
 RECOVERY_MIGRATION_DIRECTORIES = (
+    Path("data/api"),
+    Path("data/api/audit"),
+    Path("data/api/confirmations"),
+    Path("data/api/idempotency"),
     Path("data/backup"),
     Path("data/backup/idempotency"),
     Path("data/restore"),
@@ -68,6 +74,10 @@ RECOVERY_MIGRATION_DIRECTORIES = (
     Path("data/repairs/idempotency"),
     Path("data/notifications"),
     Path("data/notifications/events"),
+    Path("data/scheduler"),
+    Path("data/scheduler/audit"),
+    Path("data/scheduler/idempotency"),
+    Path("data/scheduler/locks"),
 )
 
 
@@ -99,7 +109,28 @@ def is_migrated(root: Path) -> bool:
         EVALUATION_MIGRATION_ID,
         FINAL_MIGRATION_ID,
         RECOVERY_MIGRATION_ID,
+        V13_FINAL_MIGRATION_ID,
     } <= applied
+
+
+def current_schema_version(root: Path) -> str:
+    """Infer the newest applied schema without rewriting legacy data."""
+    if not migration_history_path(root).exists():
+        return "1.0"
+    applied = {
+        item.get("id")
+        for item in load_migration_history(root)["migrations"]
+        if isinstance(item, dict)
+    }
+    if V13_FINAL_MIGRATION_ID in applied:
+        return TARGET_SCHEMA_VERSION
+    if RECOVERY_MIGRATION_ID in applied:
+        return "1.3-recovery"
+    if FINAL_MIGRATION_ID in applied:
+        return "1.2"
+    if MIGRATION_ID in applied:
+        return "1.1"
+    return "1.0"
 
 
 def migration_plan(root: Path) -> list[dict[str, str]]:
@@ -157,6 +188,30 @@ def migration_plan(root: Path) -> list[dict[str, str]]:
     return plan
 
 
+def migration_check(root: Path) -> dict[str, Any]:
+    plan = migration_plan(root)
+    targets = [item for item in plan if item["action"] == "create"]
+    return {
+        "source_schema_version": current_schema_version(root),
+        "target_schema_version": TARGET_SCHEMA_VERSION,
+        "target_app_version": "1.3.0",
+        "already_migrated": is_migrated(root),
+        "target_files": [item["path"] for item in targets],
+        "changes": [
+            "不足ディレクトリと配布テンプレートだけを作成",
+            "migration履歴へv1.3-finalを追記",
+        ],
+        "existing_daily_weekly_monthly_rewritten": False,
+        "backup_required": True,
+        "compatibility_issues": [],
+        "manual_checks": [
+            "migration前バックアップを検証する",
+            "migration後にdaily-review doctorを実行する",
+        ],
+        "plan": plan,
+    }
+
+
 def apply_migration(root: Path) -> dict[str, Any]:
     """Create missing v1.1/v1.2 support files without changing user data."""
     history = load_migration_history(root)
@@ -200,6 +255,13 @@ def apply_migration(root: Path) -> dict[str, Any]:
         new_records.append({"id": FINAL_MIGRATION_ID, "from_version": "1.2.0rc1"})
     if RECOVERY_MIGRATION_ID not in applied:
         new_records.append({"id": RECOVERY_MIGRATION_ID, "from_version": "1.2.0"})
+    if V13_FINAL_MIGRATION_ID not in applied:
+        new_records.append(
+            {
+                "id": V13_FINAL_MIGRATION_ID,
+                "from_version": current_schema_version(root),
+            }
+        )
     for record in new_records:
         history["migrations"].append(
             {

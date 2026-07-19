@@ -1,4 +1,5 @@
 """Preparation of untrusted ChatGPT responses before importing them."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -15,7 +16,9 @@ def prepare_receive(
     requested_day: str | None,
     allow_expired: bool,
     force: bool,
-) -> tuple[dict[str, Any], list[str], dict[str, Any], dict[str, Any], dict[str, Any], str]:
+) -> tuple[
+    dict[str, Any], list[str], dict[str, Any], dict[str, Any], dict[str, Any], str
+]:
     """Extract, validate, and bind a response to an issued handoff."""
     payload, warnings = validate_payload(extract_json(content))
     manifest, item, handoff, content_hash = validate_response(

@@ -25,12 +25,24 @@ REVIEW = {
     "diary": "今日は少し疲れていたが、完全に何もしない日にはならなかった。",
     "structured_review": {
         "today_main": [
-            {"area": "院試", "status": "一部進んだ", "note": "過去問の問題文を少し確認した"},
-            {"area": "研究", "status": "一部進んだ", "note": "RGSスペクトルを開いて表示を確認した"},
+            {
+                "area": "院試",
+                "status": "一部進んだ",
+                "note": "過去問の問題文を少し確認した",
+            },
+            {
+                "area": "研究",
+                "status": "一部進んだ",
+                "note": "RGSスペクトルを開いて表示を確認した",
+            },
             {"area": "筋トレ・健康", "status": "未着手", "note": "今日は休みにした"},
         ],
         "minimum_line": {"院試": "達成", "研究": "達成", "筋トレ・健康": "未達"},
-        "what_went_well": ["学校に行けた", "研究作業を始められた", "完全に何もしない日にはならなかった"],
+        "what_went_well": [
+            "学校に行けた",
+            "研究作業を始められた",
+            "完全に何もしない日にはならなかった",
+        ],
         "breakdown_causes": ["スマホ", "疲れ"],
         "one_change_tomorrow": "朝イチで過去問を開く",
     },
@@ -75,17 +87,58 @@ def _save_phase2_day(tmp_path, approve: bool = True):
     _write_json(review_path, REVIEW)
     _write_json(proposal_path, PROPOSAL)
 
-    assert runner.invoke(
-        app, ["save-raw", "--date", "2026-07-13", "--file", str(raw_path), "--root", str(tmp_path)]
-    ).exit_code == 0
-    assert runner.invoke(
-        app, ["save-review", "--date", "2026-07-13", "--file", str(review_path), "--root", str(tmp_path)]
-    ).exit_code == 0
-    assert runner.invoke(
-        app, ["save-proposal", "--date", "2026-07-13", "--file", str(proposal_path), "--root", str(tmp_path)]
-    ).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "save-raw",
+                "--date",
+                "2026-07-13",
+                "--file",
+                str(raw_path),
+                "--root",
+                str(tmp_path),
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "save-review",
+                "--date",
+                "2026-07-13",
+                "--file",
+                str(review_path),
+                "--root",
+                str(tmp_path),
+            ],
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            app,
+            [
+                "save-proposal",
+                "--date",
+                "2026-07-13",
+                "--file",
+                str(proposal_path),
+                "--root",
+                str(tmp_path),
+            ],
+        ).exit_code
+        == 0
+    )
     if approve:
-        assert runner.invoke(app, ["approve-plan", "--date", "2026-07-13", "--root", str(tmp_path)]).exit_code == 0
+        assert (
+            runner.invoke(
+                app, ["approve-plan", "--date", "2026-07-13", "--root", str(tmp_path)]
+            ).exit_code
+            == 0
+        )
 
 
 def test_japanese_multiline_raw_log_is_saved_verbatim(tmp_path):
@@ -121,7 +174,9 @@ def test_approval_keeps_proposal_and_creates_approved_final(tmp_path):
 
 def test_today_uses_target_date_and_is_short(tmp_path):
     _save_phase2_day(tmp_path)
-    result = runner.invoke(app, ["today", "--date", "2026-07-14", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["today", "--date", "2026-07-14", "--root", str(tmp_path)]
+    )
     assert result.exit_code == 0
     assert "今日の指示書｜2026-07-14" in result.output
     assert "1. 院試" in result.output
@@ -141,13 +196,17 @@ def test_daily_markdown_contains_diary_and_final_plan(tmp_path):
 
 def test_one_day_weekly_summary_is_created_for_tuesday_to_monday(tmp_path):
     _save_phase2_day(tmp_path)
-    result = runner.invoke(app, ["weekly", "--date", "2026-07-13", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["weekly", "--date", "2026-07-13", "--root", str(tmp_path)]
+    )
     assert result.exit_code == 0
     assert "対象期間: 2026-07-07〜2026-07-13" in result.output
     assert "記録日数: 1" in result.output
     assert "記録日数が少ない" in result.output
     assert (tmp_path / "data" / "weekly" / "2026-07-07_2026-07-13.json").is_file()
-    markdown = (tmp_path / "logs" / "weekly_2026-07-07_2026-07-13.md").read_text(encoding="utf-8")
+    markdown = (tmp_path / "logs" / "weekly_2026-07-07_2026-07-13.md").read_text(
+        encoding="utf-8"
+    )
     assert "最低ライン達成率" in markdown
     assert "崩れた原因ランキング" in markdown
     assert "確定版指示書を作れた日数：1" in markdown
@@ -159,7 +218,9 @@ def test_weekly_period_is_tuesday_to_monday():
 
 def test_status_shows_phase2_progress(tmp_path):
     _save_phase2_day(tmp_path)
-    result = runner.invoke(app, ["status", "--date", "2026-07-13", "--root", str(tmp_path)])
+    result = runner.invoke(
+        app, ["status", "--date", "2026-07-13", "--root", str(tmp_path)]
+    )
     assert result.exit_code == 0
     assert "生ログ        保存済み" in result.output
     assert "整形ログ      保存済み" in result.output

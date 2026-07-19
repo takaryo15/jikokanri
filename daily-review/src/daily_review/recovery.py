@@ -172,7 +172,7 @@ def build_restore_preview(
                 }
             )
     deleted = sorted(_current_files(root) - archive_names) if mode == "replace" else []
-    summary = {
+    summary: dict[str, list[Any]] = {
         "added": sorted(added),
         "updated": sorted(updated),
         "unchanged": sorted(unchanged),

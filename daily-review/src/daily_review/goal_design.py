@@ -1,4 +1,5 @@
 """Reviewable, API-free ChatGPT goal design sessions."""
+
 from __future__ import annotations
 
 import copy
@@ -8,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 from .goals import (
-    GoalError,
     goal_path,
     load_goals,
     new_goal,
@@ -22,8 +22,24 @@ from .storage import atomic_write_json_data, atomic_write_json_data_many, read_j
 
 DESIGN_STATUSES = {"questioning", "proposed", "applied", "cancelled"}
 PROPOSAL_FIELDS = {"goal", "milestones"}
-GOAL_FIELDS = {"title", "level", "category", "description", "start_date", "due_date", "qualitative", "metrics"}
-MILESTONE_FIELDS = {"title", "description", "start_date", "due_date", "qualitative", "steps"}
+GOAL_FIELDS = {
+    "title",
+    "level",
+    "category",
+    "description",
+    "start_date",
+    "due_date",
+    "qualitative",
+    "metrics",
+}
+MILESTONE_FIELDS = {
+    "title",
+    "description",
+    "start_date",
+    "due_date",
+    "qualitative",
+    "steps",
+}
 STEP_FIELDS = {"title", "description", "start_date", "due_date", "minimum"}
 
 
@@ -36,7 +52,11 @@ def designs_dir(root: Path) -> Path:
 
 
 def design_path(root: Path, design_id: str) -> Path:
-    if not isinstance(design_id, str) or not design_id.startswith("design-") or len(design_id) != 15:
+    if (
+        not isinstance(design_id, str)
+        or not design_id.startswith("design-")
+        or len(design_id) != 15
+    ):
         raise GoalDesignError("design IDの形式が不正です")
     return designs_dir(root) / f"{design_id}.json"
 
@@ -92,7 +112,9 @@ def save_answer(root: Path, design_id: str, answer: str) -> dict[str, Any]:
 def _reject_unknown(value: dict[str, Any], allowed: set[str], label: str) -> None:
     unknown = sorted(set(value) - allowed)
     if unknown:
-        raise GoalDesignError(f"{label}に未知フィールドがあります: {', '.join(unknown)}")
+        raise GoalDesignError(
+            f"{label}に未知フィールドがあります: {', '.join(unknown)}"
+        )
 
 
 def validate_proposal(payload: Any) -> dict[str, Any]:
@@ -104,13 +126,20 @@ def validate_proposal(payload: Any) -> dict[str, Any]:
     if not isinstance(goal, dict) or not isinstance(milestones, list):
         raise GoalDesignError("goalまたはmilestonesの形式が不正です")
     _reject_unknown(goal, GOAL_FIELDS, "goal")
-    if not isinstance(goal.get("title"), str) or not goal["title"].strip() or goal.get("level") not in {"vision", "long", "medium", "short"}:
+    if (
+        not isinstance(goal.get("title"), str)
+        or not goal["title"].strip()
+        or goal.get("level") not in {"vision", "long", "medium", "short"}
+    ):
         raise GoalDesignError("goal.titleまたはgoal.levelが不正です")
     for milestone in milestones:
         if not isinstance(milestone, dict):
             raise GoalDesignError("milestoneの形式が不正です")
         _reject_unknown(milestone, MILESTONE_FIELDS, "milestone")
-        if not isinstance(milestone.get("title"), str) or not milestone["title"].strip():
+        if (
+            not isinstance(milestone.get("title"), str)
+            or not milestone["title"].strip()
+        ):
             raise GoalDesignError("milestone.titleが不正です")
         steps = milestone.get("steps", [])
         if not isinstance(steps, list):
@@ -177,14 +206,16 @@ def apply_design(root: Path, design_id: str) -> tuple[dict[str, Any], dict[str, 
             qualitative=milestone_spec.get("qualitative") or [],
         )
         for index, step_spec in enumerate(milestone_spec.get("steps", []), start=1):
-            milestone["steps"].append(new_step(
-                title=step_spec["title"],
-                description=step_spec.get("description"),
-                start_date=step_spec.get("start_date"),
-                due_date=step_spec.get("due_date"),
-                minimum=step_spec.get("minimum"),
-                order=index,
-            ))
+            milestone["steps"].append(
+                new_step(
+                    title=step_spec["title"],
+                    description=step_spec.get("description"),
+                    start_date=step_spec.get("start_date"),
+                    due_date=step_spec.get("due_date"),
+                    minimum=step_spec.get("minimum"),
+                    order=index,
+                )
+            )
         goal["milestones"].append(milestone)
     goals = load_goals(root) + [goal]
     validate_goal(goal, goals)
@@ -193,8 +224,10 @@ def apply_design(root: Path, design_id: str) -> tuple[dict[str, Any], dict[str, 
     updated["applied_goal_id"] = goal["id"]
     updated["applied_at"] = updated["updated_at"] = now_iso()
     updated["revision"] = int(updated.get("revision", 1)) + 1
-    atomic_write_json_data_many([
-        (goal_path(root, goal["id"]), goal),
-        (design_path(root, design_id), updated),
-    ])
+    atomic_write_json_data_many(
+        [
+            (goal_path(root, goal["id"]), goal),
+            (design_path(root, design_id), updated),
+        ]
+    )
     return goal, updated

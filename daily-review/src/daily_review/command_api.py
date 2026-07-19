@@ -919,8 +919,10 @@ def _handle_command(
             }
         )
         return {"instruction_id": payload["instruction_id"], "instruction": instruction}
-    if kind.startswith("scheduler_") or kind.startswith("run_") and kind.endswith(
-        "_flow"
+    if (
+        kind.startswith("scheduler_")
+        or kind.startswith("run_")
+        and kind.endswith("_flow")
     ):
         from .operational_flows import run_operational_flow
         from .scheduler import (
@@ -952,7 +954,12 @@ def _handle_command(
             }
         if kind == "scheduler_run_due":
             preview = run_due_jobs(state.root, at, dry_run=True, source="command_api")
-            action = {"kind": kind, "index": index, "payload": payload, "at": at.isoformat()}
+            action = {
+                "kind": kind,
+                "index": index,
+                "payload": payload,
+                "at": at.isoformat(),
+            }
         elif kind == "scheduler_run_job":
             preview = run_scheduled_job(
                 state.root,
@@ -962,7 +969,12 @@ def _handle_command(
                 force=payload.get("force", False),
                 source="command_api",
             )
-            action = {"kind": kind, "index": index, "payload": payload, "at": at.isoformat()}
+            action = {
+                "kind": kind,
+                "index": index,
+                "payload": payload,
+                "at": at.isoformat(),
+            }
         else:
             flow = kind.removeprefix("run_").removesuffix("_flow")
             preview = run_operational_flow(
@@ -995,9 +1007,7 @@ def _handle_command(
     raise CommandProblem("UNKNOWN_COMMAND", f"未対応のcommandです: {kind}")
 
 
-def _execute_external_actions(
-    root: Path, plan: ExecutionPlan
-) -> None:
+def _execute_external_actions(root: Path, plan: ExecutionPlan) -> None:
     from .operational_flows import run_operational_flow
     from .scheduler import run_due_jobs, run_scheduled_job
 

@@ -1,6 +1,28 @@
 # daily-review
 
-`daily-review` は、毎日の振り返り、翌日の指示書、実行結果、目標ロードマップをローカルのJSONとMarkdownに残すPython CLIです。正式版はv1.2.0で、v1.3の実運用UXを開発中です。目標を週次・日次計画へ接続し、評価と再計画を明示承認付きで扱います。
+`daily-review` は、毎日の振り返り、翌日の指示書、実行結果、目標ロードマップをローカルのJSONとMarkdownに残すPython CLIです。v1.3ではChatGPTとの安全な受け渡し、タスク、backup/restore、レポート、scheduler、migrationを日常運用へ統合しました。変更の確定には明示承認が必要です。
+
+毎日の入口は次のコマンドです。
+
+```bash
+daily-review home
+```
+
+初めて使う場合は、[はじめに](docs/getting-started.md)を参照してください。
+
+## 利用ガイド
+
+- [毎日の使い方](docs/daily-workflow.md)
+- [ChatGPT連携](docs/chatgpt-integration.md)
+- [タスクと繰越](docs/tasks-and-rollover.md)
+- [週次・月次レポート](docs/weekly-monthly-reports.md)
+- [backupとrestore](docs/backup-and-restore.md)
+- [scheduler](docs/scheduler.md)
+- [設定](docs/configuration.md)
+- [v1.0からv1.3への移行](docs/migration-v1.0-to-v1.3.md)
+- [トラブルシューティング](docs/troubleshooting.md)
+- [セキュリティ](docs/security.md)
+- [v1.3.0リリースノート](docs/releases/v1.3.0.md)
 
 ## v1でできること
 
@@ -11,7 +33,7 @@
 - 読み取り専用の `doctor` と `release-check`
 - SHA-256 manifest付きのバックアップと安全な復元
 
-## v1.1 開発中: 自然文入力
+## v1.1以降: 自然文入力
 
 ## v1.1 RCの毎晩の基本操作
 
@@ -150,7 +172,7 @@ daily-review home
 
 回答を受信しても、承認するまで日次データは確定されません。保留したドラフトは `daily-review chat --resume` で再開できます。`chat`、`chat-prompt`、`chat-import`、`input`、`organize`、`review`、`edit-draft`、`approve` はトラブル対応や高度な個別操作として引き続き利用できます。
 
-`input` は、ChatGPT上で書いた自然文の原文を日別inboxへ安全に追記保存するv1.1開発中の入口です。入力原文は日次レビュー、Main、タスク結果、明日の計画へ自動反映しません。
+`input` は、ChatGPT上で書いた自然文の原文を日別inboxへ安全に追記保存する入口です。入力原文は日次レビュー、Main、タスク結果、明日の計画へ自動反映しません。
 
 ```bash
 daily-review input --text "今日は院試を2問進めた"
@@ -584,7 +606,7 @@ issueには安定したcodeとinfo/warning/error/criticalのseverityが付きま
 
 ## release-check
 
-`release-check` はv1.2.0のバージョン、package metadata、主要コマンド、テンプレート、評価・replan・coachモジュール、ドキュメント、Git除外、migration定義を読み取り専用で確認します。`v12-check`は指定ルートの目標・計画・評価・replan・transactionを読み取り専用で点検します。
+`release-check` はv1.3.0のバージョン、package metadata、主要コマンド、安全機能、ドキュメント、Git除外、migration定義を読み取り専用で確認します。`v12-check`は指定ルートの目標・計画・評価・replan・transactionを読み取り専用で点検します。
 
 ```bash
 daily-review release-check
@@ -744,4 +766,4 @@ daily-review --version
 daily-review --version
 ```
 
-現在の正式リリースは `1.2.0` です。v1.3の機能は`CHANGELOG.md`のUnreleasedとして開発中です。
+現在の正式リリースは `1.3.0` です。詳細は`CHANGELOG.md`と`docs/releases/v1.3.0.md`を参照してください。

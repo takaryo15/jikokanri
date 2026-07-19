@@ -24,3 +24,5 @@ daily-review scheduler run-due --at 2026-07-20T21:00:00+09:00 --dry-run --format
 履歴は`data/scheduler/history.json`に保存されます。lockは`data/scheduler/locks`にあり、設定時間を超えたstale lockだけをdoctor repairの対象にします。
 
 jobのPython内処理を強制終了するprocess-level timeoutは実装していません。代わりにjobのtimeout設定をlockのstale判定に用い、launchdの次回pollとdoctorで回復可能にしています。
+missed run policyは`run_once`、`skip`、`notify_only`です。複数の過去slotを一括再生する
+`run_all`はv1.3の対象外で、設定すると検証エラーになります。
